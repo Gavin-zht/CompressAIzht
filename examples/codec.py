@@ -390,6 +390,21 @@ def encode_video(input, codec: CodecInfo, output):
 
 
 def _encode(input, num_of_frames, model, metric, quality, coder, device, output):
+    """_summary_
+    编码器执行编码操作
+    Args:
+        input (_type_): 编码器输入图像的路径
+        num_of_frames (_type_): _description_
+        model (_type_): _description_
+        metric (_type_): _description_
+        quality (_type_): _description_
+        coder (_type_): _description_
+        device (_type_): _description_
+        output (_type_): _description_
+
+    Raises:
+        FileNotFoundError: _description_
+    """
     encode_func = {
         CodecType.IMAGE_CODEC: encode_image,
         CodecType.VIDEO_CODEC: encode_video,
@@ -539,17 +554,17 @@ def show_image(img: Image.Image):
 
 def encode(argv):
     """_summary_
-    编码器指令
+    编码指令，当前编解码器用于编码操作，编码器先读取并解析收到的命令行参数，根据命令行参数调用_encode函数执行相应的编码操作。
     Args:
-        argv (_type_): _description_
+        argv (_type_): 编码器的命令行参数
     """
-    parser = argparse.ArgumentParser(description="Encode image/video to bit-stream")
-    #* input 是一个必须参数，必须要提供，用于指定编码器的输入(待压缩的图像)
+    parser = argparse.ArgumentParser(description="Encode image/video to bit-stream")    #* 定义编码器的解析器parser, 用于读取并解析编码器收到的命令行参数
+    
     parser.add_argument(
         "input",
         type=str,
         help="Input path, the first frame will be encoded with a NN image codec if the input is a raw yuv sequence",
-    )
+    )#* input 是一个位置参数，必须要提供，用于指定编码器的输入(待压缩的图像)
     parser.add_argument(
         "-f",
         "--num_of_frames",
@@ -584,14 +599,14 @@ def encode(argv):
         choices=compressai.available_entropy_coders(),
         default=compressai.available_entropy_coders()[0],
         help="Entropy coder (default: %(default)s)",
-    )
-    parser.add_argument("-o", "--output", help="Output path") #* output 是一个可选参数，不一定必须要提供，用于指定编码器的输出(码流文件的路径)
+    ) #* coder是一个选项参数，不一定必须要提供，用于指定编码器所用的熵编码模型
+    parser.add_argument("-o", "--output", help="Output path") #* output 是一个选项参数，不一定必须要提供，用于指定编码器的输出(码流文件的路径)
     parser.add_argument("--cuda", action="store_true", help="Use cuda")
     args = parser.parse_args(argv)
-    if not args.output:
+    if not args.output: #* 如果没有在命令行参数中给出output选项参数，那么就指定编码器的输出路径为compressai的这个文件夹下
         args.output = Path(Path(args.input).resolve().name).with_suffix(".bin")
 
-    device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
+    device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"   #* 设置用于计算的设备是GPU还是CPU
     _encode(
         args.input,
         args.num_of_frames,
@@ -601,17 +616,17 @@ def encode(argv):
         args.coder,
         device,
         args.output,
-    )
+    )   #* 调用_encode函数执行相应的编码操作
 
 
 def decode(argv):
     """_summary_
-    解码指令
+    解码指令，当前编解码器用于解码操作，
     Args:
-        argv (_type_): _description_
+        argv (_type_): 解码器的命令行参数
     """
     parser = argparse.ArgumentParser(description="Decode bit-stream to image/video")
-    parser.add_argument("input", type=str) #* input 是一个必须参数，必须要提供，用于指定解码器的输入(码流文件)
+    parser.add_argument("input", type=str) #* input 是一个位置参数，必须要提供，用于指定解码器的输入(码流文件)
     parser.add_argument(
         "-c",
         "--coder",
@@ -620,7 +635,7 @@ def decode(argv):
         help="Entropy coder (default: %(default)s)",
     )
     parser.add_argument("--show", action="store_true")
-    parser.add_argument("-o", "--output", help="Output path") #* output 是一个可选参数，不一定必须要提供，用于指定解码器的输出(重建图像文件的路径)
+    parser.add_argument("-o", "--output", help="Output path") #* output 是一个选项参数，不一定必须要提供，用于指定解码器的输出(重建图像文件的路径)
     parser.add_argument("--cuda", action="store_true", help="Use cuda")
     args = parser.parse_args(argv)
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
@@ -628,19 +643,32 @@ def decode(argv):
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description="")
-    parser.add_argument("command", choices=["encode", "decode"])
-    args = parser.parse_args(argv)
+    """_summary_
+    自定义重载的parse_args函数, 用于读取并解析命令行参数
+    Args:
+        argv (str): 命令行参数
+
+    Returns:
+       args, args.command 记录了当前编解码器codec 是用于“编码” 还是用于“解码”.
+    """
+    parser = argparse.ArgumentParser(description="") #* 定义一个解析器 parser
+    parser.add_argument("command", choices=["encode", "decode"]) #* 解析器 parser 添加一个必须参数 command, 用于指定当前编解码器是用于“编码” 还是用于“解码”.
+    args = parser.parse_args(argv) #* 让解析器 parser去读取并解析命令行参数
     return args
 
 
 def main(argv):
-    args = parse_args(argv[0:1])
-    argv = argv[1:]
+    """_summary_
+    编解码器codec.py 的主函数，
+    Args:
+        argv (str): 接受一个命令行参数argv,  是一个字符串
+    """
+    args = parse_args(argv[0:1])    #* 调用自定义重载的parse_args函数读取并解析命令行参数中的第一个必须参数(command)，用于指定当前编解码器是用于“编码” 还是用于“解码”.
+    argv = argv[1:]     #* 将命令行参数修改为去掉第一个必须参数(command) 后的内容.
     torch.set_num_threads(1)  # just to be sure
-    if args.command == "encode":
+    if args.command == "encode":    #* 如果指定的当前编解码器codec是用于“编码”，那么就调用encode函数执行编码操作
         encode(argv)
-    elif args.command == "decode":
+    elif args.command == "decode":  #* 如果指定的当前编解码器codec是用于“解码”，那么就调用decode函数执行编码操作
         decode(argv)
 
 
