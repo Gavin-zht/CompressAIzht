@@ -64,7 +64,7 @@ video_models = {
     "ssf2020": ssf2020,
 }
 
-models = {}
-models.update(image_models)
-models.update(pointcloud_models)
-models.update(video_models)
+models = {} #* models 是一个字典，用于实现“模型名” 到 “模型类加载器” 之间的映射
+models.update(image_models)     #* 将图像压缩模型添加到models字典中
+models.update(pointcloud_models)    #* 将点云压缩模型添加到models字典中
+models.update(video_models) #* 将视频压缩模型添加到models字典中
