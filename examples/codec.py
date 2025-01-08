@@ -538,7 +538,13 @@ def show_image(img: Image.Image):
 
 
 def encode(argv):
+    """_summary_
+    编码器指令
+    Args:
+        argv (_type_): _description_
+    """
     parser = argparse.ArgumentParser(description="Encode image/video to bit-stream")
+    #* input 是一个必须参数，必须要提供，用于指定编码器的输入(待压缩的图像)
     parser.add_argument(
         "input",
         type=str,
@@ -579,7 +585,7 @@ def encode(argv):
         default=compressai.available_entropy_coders()[0],
         help="Entropy coder (default: %(default)s)",
     )
-    parser.add_argument("-o", "--output", help="Output path")
+    parser.add_argument("-o", "--output", help="Output path") #* output 是一个可选参数，不一定必须要提供，用于指定编码器的输出(码流文件的路径)
     parser.add_argument("--cuda", action="store_true", help="Use cuda")
     args = parser.parse_args(argv)
     if not args.output:
@@ -599,8 +605,13 @@ def encode(argv):
 
 
 def decode(argv):
+    """_summary_
+    解码指令
+    Args:
+        argv (_type_): _description_
+    """
     parser = argparse.ArgumentParser(description="Decode bit-stream to image/video")
-    parser.add_argument("input", type=str)
+    parser.add_argument("input", type=str) #* input 是一个必须参数，必须要提供，用于指定解码器的输入(码流文件)
     parser.add_argument(
         "-c",
         "--coder",
@@ -609,7 +620,7 @@ def decode(argv):
         help="Entropy coder (default: %(default)s)",
     )
     parser.add_argument("--show", action="store_true")
-    parser.add_argument("-o", "--output", help="Output path")
+    parser.add_argument("-o", "--output", help="Output path") #* output 是一个可选参数，不一定必须要提供，用于指定解码器的输出(重建图像文件的路径)
     parser.add_argument("--cuda", action="store_true", help="Use cuda")
     args = parser.parse_args(argv)
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
