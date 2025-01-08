@@ -27,9 +27,12 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#* codec.py 是 编解码器的主函数文件，执行这个文件来对视频/图像进行编解码
+
 import argparse
 import struct
 import sys
+import os
 import time
 
 from enum import Enum
@@ -44,6 +47,14 @@ from PIL import Image
 from torch import Tensor
 from torch.utils.model_zoo import tqdm
 from torchvision.transforms import ToPILImage, ToTensor
+
+# 获取当前脚本的绝对路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 获取父级目录的路径
+parent_dir = os.path.dirname(current_dir)
+# 将父级目录添加到sys.path
+sys.path.append(parent_dir)
+
 
 import compressai
 
@@ -67,6 +78,11 @@ Frame = Union[Tuple[Tensor, Tensor, Tensor], Tuple[Tensor, ...]]
 
 
 class CodecType(Enum):
+    """_summary_
+    CodecType 是 用于决定编码器的功能类型，
+    Args:
+        Enum (_type_): _description_
+    """
     IMAGE_CODEC = 0
     VIDEO_CODEC = 1
     NUM_CODEC_TYPE = 2
@@ -253,41 +269,59 @@ def write_frame(fout: IO[bytes], frame: Frame, bitdepth: np.uint = 8):
 
 
 def encode_image(input, codec: CodecInfo, output):
+    """_summary_
+    编码图像函数，用于将单个图像文件编码成压缩数据流的函数
+    Args:
+        input (_type_): 输入图像文件的路径。
+        codec (CodecInfo): 一个 CodecInfo 类型的实例，包含了执行编码所需的各种信息，例如编解码器头信息、原始图像大小、原始位深、网络模型和设备类型。
+        output (_type_): 输出压缩数据流文件的路径。
+
+    Raises:
+        NotImplementedError: _description_
+
+    Returns:
+        返回一个字典，包含比特率 bpp。
+    """
     if Path(input).suffix == ".yuv":
         # encode first frame of YUV sequence only
-        org_seq = RawVideoSequence.from_file(input)
-        bitdepth = org_seq.bitdepth
-        max_val = 2**bitdepth - 1
+        #* 如果输入文件的后缀是 .yuv，则说明输入的是一个YUV视频序列文件，函数将只编码该序列的第一帧。
+        org_seq = RawVideoSequence.from_file(input) #* 使用 RawVideoSequence.from_file(input) 从YUV文件中读取视频序列信息，包括位深和视频格式等。
+        bitdepth = org_seq.bitdepth # 当前视频的位深 bitdepth
+        max_val = 2**bitdepth - 1 # 得到在当前位深下的最大值: ( 2^bitdepth -1 )
         if org_seq.format != VideoFormat.YUV420:
+            # 检查视频格式是否为 YUV420，如果不是则抛出异常
             raise NotImplementedError(f"Unsupported video format: {org_seq.format}")
-        x = convert_yuv420_rgb(org_seq[0], codec.device, max_val)
+        x = convert_yuv420_rgb(org_seq[0], codec.device, max_val) # 使用 convert_yuv420_rgb 函数将YUV420格式的第一帧转换为RGB格式，并存储在变量 x 中。
     else:
+        #* 如果输入文件不是 .yuv 文件，则使用 load_image 函数加载图像，并使用 img2torch 函数将其转换为PyTorch张量，存储在变量 x 中。
         img = load_image(input)
         x = img2torch(img).to(codec.device)
-        bitdepth = 8
+        bitdepth = 8 #* 此时将位深设置为8（对于普通RGB图像文件，通常位深为8）
 
-    h, w = x.size(2), x.size(3)
-    p = 64  # maximum 6 strides of 2
-    x = pad(x, p)
+    h, w = x.size(2), x.size(3) #* 获取图像的高度 h 和宽度 w
+    p = 64  # maximum 6 strides of 2 
+    #* 设置填充大小 p 为64，这是为了确保图像尺寸能够被神经网络模型处理（通常模型要求输入尺寸是某个数的倍数）。
+    x = pad(x, p) # 使用 pad 函数对图像 x 进行填充，使其高度和宽度满足模型要求
 
-    with torch.no_grad():
+    with torch.no_grad(): #* 使用 torch.no_grad() 上下文管理器，确保在压缩过程中不计算梯度，以提高性能。
         out = codec.net.compress(x)
+        #* 调用 codec.net.compress(x)，使用编解码器中的神经网络模型对填充后的图像 x 进行压缩，得到压缩后的数据 out。
 
     shape = out["shape"]
 
-    with Path(output).open("wb") as f:
-        write_uchars(f, codec.codec_header)
+    with Path(output).open("wb") as f: #* 使用 Path(output).open("wb") 打开输出文件，准备写入压缩数据。
+        write_uchars(f, codec.codec_header) #* 调用 write_uchars(f, codec.codec_header) 将编解码器头信息写入文件。
         # write original image size
-        write_uints(f, (h, w))
+        write_uints(f, (h, w)) #* 调用 write_uints(f, (h, w)) 将原始图像的高度和宽度写入文件。
         # write original bitdepth
-        write_uchars(f, (bitdepth,))
+        write_uchars(f, (bitdepth,)) #* 调用 write_uchars(f, (bitdepth,)) 将原始图像的位深写入文件。
         # write shape and number of encoded latents
-        write_body(f, shape, out["strings"])
+        write_body(f, shape, out["strings"]) #* 调用 write_body(f, shape, out["strings"]) 将压缩后的数据形状和字符串数据(码流)写入文件。
 
-    size = filesize(output)
-    bpp = float(size) * 8 / (h * w)
+    size = filesize(output) #* 使用 filesize(output) 获取输出文件的大小（字节数）。
+    bpp = float(size) * 8 / (h * w) #* 计算比特率 bpp（bits per pixel），即每个像素平均占用的比特数，计算公式为 float(size) * 8 / (h * w)。
 
-    return {"bpp": bpp}
+    return {"bpp": bpp} #* 返回一个字典，包含比特率 bpp。
 
 
 def encode_video(input, codec: CodecInfo, output):
