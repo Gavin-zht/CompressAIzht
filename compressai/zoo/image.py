@@ -27,6 +27,8 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#* image.py 文件中封装了 图像压缩模型
+
 from torch.hub import load_state_dict_from_url
 
 from compressai.models import (
