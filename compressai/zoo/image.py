@@ -27,9 +27,9 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#* image.py 文件中封装了 图像压缩模型
+#* image.py 文件中封装了 图像压缩模型， 主要用于加载和配置不同的图像压缩模型。
 
-from torch.hub import load_state_dict_from_url
+from torch.hub import load_state_dict_from_url  #* 用于从URL加载预训练模型的PyTorch模块
 
 from compressai.models import (
     Cheng2020Anchor,
@@ -39,7 +39,7 @@ from compressai.models import (
     JointAutoregressiveHierarchicalPriors,
     MeanScaleHyperprior,
     ScaleHyperprior,
-)
+)   #* 导入了多个图像压缩模型类
 
 from .pretrained import load_pretrained
 
@@ -61,9 +61,9 @@ model_architectures = {
     "mbt2018": JointAutoregressiveHierarchicalPriors,
     "cheng2020-anchor": Cheng2020Anchor,
     "cheng2020-attn": Cheng2020Attention,
-}
+}   #* model_architecture是一个字典，映射了模型名称到对应的模型类。
 
-root_url = "https://compressai.s3.amazonaws.com/models/v1"
+root_url = "https://compressai.s3.amazonaws.com/models/v1"  #* 预训练模型文件的基础URL
 model_urls = {
     "bmshj2018-factorized": {
         "mse": {
@@ -189,7 +189,7 @@ model_urls = {
             6: f"{root_url}/cheng2020_attn-ms-ssim-6-216423ec.pth.tar",
         },
     },
-}
+}   #* model_urls 是嵌套字典，存储了不同模型在不同质量级别和优化指标下的预训练模型文件URL。
 
 cfgs = {
     "bmshj2018-factorized": {
@@ -258,12 +258,32 @@ cfgs = {
         5: (192,),
         6: (192,),
     },
-}
+}   #* cfgs是一个字典，存储了不同模型在不同质量级别下的配置参数。
 
 
 def _load_model(
     architecture, metric, quality, pretrained=False, progress=True, **kwargs
 ):
+    """_summary_
+    加载指定架构、质量级别和优化指标的图像压缩模型。
+    
+    Args:
+    architecture：模型架构名称。
+    metric：优化指标，如 mse 或 ms-ssim。
+    quality：质量级别。
+    pretrained：是否加载预训练模型。
+    progress：是否显示下载进度条。
+    **kwargs：其他关键字参数，传递给模型构造函数。
+
+    Logic:
+    首先检查架构名称和质量级别是否有效。
+    如果 pretrained 为 True，则从 model_urls 中获取预训练模型的URL，使用 load_state_dict_from_url 加载模型状态，并调用 load_pretrained 进行处理，最后使用 from_state_dict 方法从状态字典中创建模型实例。
+    如果 pretrained 为 False，则直接使用 model_architectures 中的模型类和 cfgs 中的配置参数创建模型实例。    
+
+
+    Returns:
+        _type_: _description_
+    """
     if architecture not in model_architectures:
         raise ValueError(f'Invalid architecture name "{architecture}"')
 
@@ -286,6 +306,18 @@ def _load_model(
 
     model = model_architectures[architecture](*cfgs[architecture][quality], **kwargs)
     return model
+
+
+
+#* bmshj2018_factorized、bmshj2018_factorized_relu、bmshj2018_hyperprior、mbt2018_mean、mbt2018、cheng2020_anchor、cheng2020_attn：
+#* 功能：分别为不同的图像压缩模型提供加载接口。
+#* 参数：
+#* quality：质量级别。
+#* metric：优化指标。
+#* pretrained：是否加载预训练模型。
+#* progress：是否显示下载进度条。
+#* **kwargs：其他关键字参数，传递给 _load_model 函数。
+#* 实现：这些函数首先检查传入的 metric 和 quality 参数是否有效，然后调用 _load_model 函数加载相应的模型。
 
 
 def bmshj2018_factorized(

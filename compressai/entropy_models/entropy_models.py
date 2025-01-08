@@ -27,6 +27,8 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+
+#* entropy_models.py 定义了几个与熵编码相关的类和函数，主要用于图像压缩中的熵模型
 import warnings
 
 from typing import Any, Callable, List, Optional, Tuple, Union
@@ -44,7 +46,20 @@ from compressai.ops import LowerBound
 
 
 class _EntropyCoder:
-    """Proxy class to an actual entropy coder class."""
+    """Proxy class to an actual entropy coder class.
+    
+    功能：代理类，用于封装实际的熵编码器类。
+    
+    属性：
+    name：熵编码器的名称。
+    _encoder：编码器实例。
+    _decoder：解码器实例。
+    
+    方法：
+    encode_with_indexes 和 decode_with_indexes：分别用于编码和解码数据，使用索引信息。    
+    
+    
+    """
 
     def __init__(self, method):
         if not isinstance(method, str):
@@ -87,6 +102,17 @@ def default_entropy_coder():
 
 
 def pmf_to_quantized_cdf(pmf: Tensor, precision: int = 16) -> Tensor:
+    """_summary_
+    功能：将概率密度函数（PMF）转换为累积概率密度函数（CDF）。
+    
+    参数：
+    pmf：概率密度函数，类型为 Tensor。
+    precision：精度，类型为 int，默认值为16。
+    
+    实现：
+    调用 _pmf_to_quantized_cdf 函数，传入 pmf.tolist() 和 precision，得到量化CDF的列表表示。
+    将列表表示转换为 torch.IntTensor 类型，返回量化CDF。
+    """
     cdf = _pmf_to_quantized_cdf(pmf.tolist(), precision)
     cdf = torch.IntTensor(cdf)
     return cdf
@@ -155,13 +181,28 @@ class EntropyModel(nn.Module):
     def quantize(
         self, inputs: Tensor, mode: str, means: Optional[Tensor] = None
     ) -> Tensor:
+        """_summary_
+    功能：对输入张量进行量化。
+    
+    参数：
+    inputs：输入张量，类型为 Tensor。
+    mode：量化模式，可选值为 "noise"、"dequantize" 或 "symbols"。
+    means：可选参数，均值张量，类型为 Optional[Tensor]。
+    
+    实现：
+    检查 mode 是否有效，如果无效则抛出 ValueError。
+    根据 mode 的值，分别进行以下操作：
+    "noise"：在输入张量上添加均匀分布的噪声，然后返回结果。
+    "dequantize"：如果 means 不为 None，则将输入张量与 means 相加，否则将输入张量转换为指定类型，返回结果。
+    "symbols"：将输入张量减去 means（如果 means 不为 None），然后进行四舍五入，转换为整数类型，返回结果。
+        """
         if mode not in ("noise", "dequantize", "symbols"):
             raise ValueError(f'Invalid quantization mode: "{mode}"')
 
         if mode == "noise":
             half = float(0.5)
-            noise = torch.empty_like(inputs).uniform_(-half, half)
-            inputs = inputs + noise
+            noise = torch.empty_like(inputs).uniform_(-half, half)  #* 定义一个噪声张量 noise, 其大小与inputs相同，noise的每一个元素都是从均匀分布[-0.5, 0.5]上随机采样得到的。
+            inputs = inputs + noise #* 在inputs上加上噪声，作为量化值的近似替代。
             return inputs
 
         outputs = inputs.clone()
@@ -182,6 +223,13 @@ class EntropyModel(nn.Module):
     def _quantize(
         self, inputs: Tensor, mode: str, means: Optional[Tensor] = None
     ) -> Tensor:
+        """_summary_
+    功能：已弃用的量化函数，建议使用 quantize 函数代替。
+    
+    参数：与 quantize 函数相同。
+    
+    实现：调用 quantize 函数，并发出弃用警告。
+        """
         warnings.warn("_quantize is deprecated. Use quantize instead.", stacklevel=2)
         return self.quantize(inputs, mode, means)
 
@@ -189,6 +237,17 @@ class EntropyModel(nn.Module):
     def dequantize(
         inputs: Tensor, means: Optional[Tensor] = None, dtype: torch.dtype = torch.float
     ) -> Tensor:
+        """_summary_
+        功能：对输入张量进行反量化。
+        
+        参数：
+        inputs：输入张量，类型为 Tensor。
+        means：可选参数，均值张量，类型为 Optional[Tensor]。
+        dtype：反量化输出的类型，类型为 torch.dtype，默认为 torch.float。
+        
+        实现：
+        如果 means 不为 None，则将输入张量转换为与 means 相同的类型，并与 means 相加，否则将输入张量转换为指定的 dtype，返回结果。
+        """
         if means is not None:
             outputs = inputs.type_as(means)
             outputs += means
@@ -198,6 +257,14 @@ class EntropyModel(nn.Module):
 
     @classmethod
     def _dequantize(cls, inputs: Tensor, means: Optional[Tensor] = None) -> Tensor:
+        """_summary_
+        功能：已弃用的反量化函数，建议使用 dequantize 函数代替。
+        
+        参数：与 dequantize 函数相同。
+        
+        实现：调用 dequantize 函数，并发出弃用警告。
+
+        """
         warnings.warn("_dequantize. Use dequantize instead.", stacklevel=2)
         return cls.dequantize(inputs, means)
 
