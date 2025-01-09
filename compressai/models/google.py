@@ -223,7 +223,15 @@ class ScaleHyperprior(CompressionModel):
     N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
     <https://arxiv.org/abs/1802.01436>`_ Int. Conf. on Learning Representations
     (ICLR), 2018.
-
+    
+    功能：实现了基于尺度超先验的图像压缩模型。
+    
+    属性：
+    entropy_bottleneck：熵瓶颈层，用于对超先验特征进行熵编码和解码。
+    g_a 和 g_s：分析变换和合成变换，与 FactorizedPrior 类似，用于编码和解码图像特征。
+    h_a 和 h_s：超先验分析变换和超先验合成变换，用于编码和解码超先验特征。
+    gaussian_conditional：高斯条件层，用于对编码后的特征进行条件熵编码和解码。
+    
     .. code-block:: none
 
                   ┌───┐    y     ┌───┐  z  ┌───┐ z_hat      z_hat ┌───┐
@@ -268,7 +276,7 @@ class ScaleHyperprior(CompressionModel):
             conv(N, N),
             GDN(N),
             conv(N, M),
-        )
+        )       #* 分析变换模块
 
         self.g_s = nn.Sequential(
             deconv(M, N),
@@ -278,7 +286,7 @@ class ScaleHyperprior(CompressionModel):
             deconv(N, N),
             GDN(N, inverse=True),
             deconv(N, 3),
-        )
+        )       #* 生成变换模块
 
         self.h_a = nn.Sequential(
             conv(M, N, stride=1, kernel_size=3),
@@ -286,7 +294,7 @@ class ScaleHyperprior(CompressionModel):
             conv(N, N),
             nn.ReLU(inplace=True),
             conv(N, N),
-        )
+        )       #* 超先验分析模块
 
         self.h_s = nn.Sequential(
             deconv(N, N),
@@ -295,7 +303,7 @@ class ScaleHyperprior(CompressionModel):
             nn.ReLU(inplace=True),
             conv(N, M, stride=1, kernel_size=3),
             nn.ReLU(inplace=True),
-        )
+        )       #* 超先验生成模块
 
         self.gaussian_conditional = GaussianConditional(None)
         self.N = int(N)
@@ -306,17 +314,24 @@ class ScaleHyperprior(CompressionModel):
         return 2 ** (4 + 2)
 
     def forward(self, x):
-        y = self.g_a(x)
-        z = self.h_a(torch.abs(y))
-        z_hat, z_likelihoods = self.entropy_bottleneck(z)
-        scales_hat = self.h_s(z_hat)
-        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat)
-        x_hat = self.g_s(y_hat)
+        """_summary_
+        前向传播函数
+        通过分析变换编码输入图像，得到特征表示 y，然后通过超先验分析变换对 y 的绝对值进行编码，得到超先验特征 z，
+        接着通过熵瓶颈层对 z 进行熵编码和解码，得到量化后的超先验特征 z_hat，
+        再通过超先验合成变换将 z_hat 解码为尺度参数 scales_hat，最后通过高斯条件层对 y 进行条件熵编码和解码，得到量化后的特征表示 y_hat，
+        并通过合成变换将 y_hat 解码为重建图像 x_hat，返回重建图像和特征表示的似然概率。
+        """
+        y = self.g_a(x)     #* 通过分析变换编码输入图像，得到特征表示 y
+        z = self.h_a(torch.abs(y))      #* 通过超先验分析变换对 y 的绝对值进行编码，得到超先验特征 z
+        z_hat, z_likelihoods = self.entropy_bottleneck(z)   #* 通过熵瓶颈层对 z 进行熵编码和解码，得到量化后的超先验特征 z_hat 和 (量化后超先验特征表示z_hat 的似然概率 z_likelihoods)
+        scales_hat = self.h_s(z_hat)        #* 超先验合成变换h_s将 z_hat 解码为尺度参数 scales_hat
+        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat) #* 通过高斯条件层对 y 进行条件熵编码和解码，得到量化后的特征表示 y_hat 和 (量化后特征表示y_hat 的似然概率 y_likelihoods)
+        x_hat = self.g_s(y_hat)     #* 通过合成变换将 y_hat 解码为重建图像 x_hat
 
         return {
             "x_hat": x_hat,
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
-        }
+        }   #* 返回重建图像 x_hat 和 特征表示的似然概率(y_likelihoods 和 z_likelihoods )。
 
     @classmethod
     def from_state_dict(cls, state_dict):
@@ -328,15 +343,25 @@ class ScaleHyperprior(CompressionModel):
         return net
 
     def compress(self, x):
-        y = self.g_a(x)
-        z = self.h_a(torch.abs(y))
+        """_summary_
+        压缩操作
+        
+        将输入x 经过编码器进行压缩，得到码流内容(包括：特征表示y的压缩码流字符串 y_strings  和 超先验特征的压缩码流字符串 z_strings)
+        Args:
+            x (_type_): _description_
 
-        z_strings = self.entropy_bottleneck.compress(z)
+        Returns:
+            _type_: _description_
+        """
+        y = self.g_a(x)     #* 通过分析变换编码输入图像，得到特征表示 y
+        z = self.h_a(torch.abs(y))      #* 通过超先验分析变换对 y 的绝对值进行编码，得到超先验特征 z
+
+        z_strings = self.entropy_bottleneck.compress(z)     #* 熵瓶颈层对 z 进行熵编码，得到超先验特征的压缩码流字符串 z_strings
         z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
         scales_hat = self.h_s(z_hat)
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
-        y_strings = self.gaussian_conditional.compress(y, indexes)
+        y_strings = self.gaussian_conditional.compress(y, indexes)      #* 通过高斯条件层对 y 进行条件熵编码，得到特征表示y的压缩码流字符串 y_strings
         return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
     def decompress(self, strings, shape):
