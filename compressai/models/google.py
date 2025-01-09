@@ -27,6 +27,8 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#* google.py 文件 定义了几个用于图像压缩的模型类，这些模型基于不同的熵编码技术和神经网络架构。
+
 import warnings
 
 import torch
@@ -67,6 +69,20 @@ class FactorizedPrior(CompressionModel):
     N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
     <https://arxiv.org/abs/1802.01436>`_, Int Conf. on Learning Representations
     (ICLR), 2018.
+    
+    功能：实现了基于完全因子化先验的图像压缩模型。
+    
+    属性：
+    entropy_bottleneck：熵瓶颈层，用于编码和解码。
+    g_a：分析变换（encoder）。
+    g_s：合成变换（decoder）。
+    N 和 M：网络中的通道数。
+    
+    方法：
+    forward：前向传播，通过分析变换编码输入，通过熵瓶颈层处理，再通过合成变换解码。
+    compress：压缩输入图像，返回压缩后的字符串和形状信息。
+    decompress：解压缩输入字符串，返回解压缩后的图像。
+    from_state_dict：从状态字典创建模型实例。
 
     .. code-block:: none
 
@@ -111,7 +127,7 @@ class FactorizedPrior(CompressionModel):
             conv(N, N),
             GDN(N),
             conv(N, M),
-        )
+        )   #* 分析变换(encoder)
 
         self.g_s = nn.Sequential(
             deconv(M, N),
@@ -121,7 +137,7 @@ class FactorizedPrior(CompressionModel):
             deconv(N, N),
             GDN(N, inverse=True),
             deconv(N, 3),
-        )
+        )   #* 合成变换(decoder)
 
         self.N = N
         self.M = M
@@ -131,9 +147,9 @@ class FactorizedPrior(CompressionModel):
         return 2**4
 
     def forward(self, x):
-        y = self.g_a(x)
-        y_hat, y_likelihoods = self.entropy_bottleneck(y)
-        x_hat = self.g_s(y_hat)
+        y = self.g_a(x) #* 通过分析变换编码输入图像，得到特征表示 y
+        y_hat, y_likelihoods = self.entropy_bottleneck(y)   #* 然后通过熵瓶颈层对 y 进行熵编码和解码，得到量化后的特征表示 y_hat 和 (特征表示的似然概率 y_likelihoods)
+        x_hat = self.g_s(y_hat) #* 最后通过合成变换将 y_hat 解码为重建图像 x_hat
 
         return {
             "x_hat": x_hat,

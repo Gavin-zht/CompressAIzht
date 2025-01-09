@@ -27,6 +27,10 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+
+#* base.py 定义了两个与图像压缩相关的基础类：CompressionModel(图像压缩模型的基础类) 和 SimpleVAECompressionModel(基于简单的变分自编码器（VAE）压缩模型, 继承自CompressionModel)
+#* 之后实现的图像压缩模型都是继承自这个CompressionModel 类
+
 import math
 import warnings
 
@@ -65,12 +69,20 @@ def get_scale_table(min=SCALES_MIN, max=SCALES_MAX, levels=SCALES_LEVELS):
 class CompressionModel(nn.Module):
     """Base class for constructing an auto-encoder with any number of
     EntropyBottleneck or GaussianConditional modules.
+    
+    功能：作为构建自编码器的基类，可以包含任意数量的 EntropyBottleneck 或 GaussianConditional 模块。
+    
+    属性：
+    entropy_bottleneck：熵瓶颈层，用于对编码后的特征进行熵编码和解码。该属性是可选的，如果在初始化时传入 entropy_bottleneck_channels 参数，则会创建一个熵瓶颈层。    
+    
+    
+    
     """
 
     def __init__(self, entropy_bottleneck_channels=None, init_weights=None):
         super().__init__()
 
-        if entropy_bottleneck_channels is not None:
+        if entropy_bottleneck_channels is not None:     #* 如果传入 entropy_bottleneck_channels 参数，则创建一个熵瓶颈层，并发出弃用警告。
             warnings.warn(
                 "The entropy_bottleneck_channels parameter is deprecated. "
                 "Create an entropy_bottleneck in your model directly instead:\n\n"
@@ -81,7 +93,7 @@ class CompressionModel(nn.Module):
                 "EntropyBottleneck(entropy_bottleneck_channels)\n",
                 DeprecationWarning,
                 stacklevel=2,
-            )
+            )   
             self.entropy_bottleneck = EntropyBottleneck(entropy_bottleneck_channels)
 
         if init_weights is not None:
@@ -118,6 +130,22 @@ class CompressionModel(nn.Module):
     def update(self, scale_table=None, force=False, update_quantiles: bool = False):
         """Updates EntropyBottleneck and GaussianConditional CDFs.
 
+
+        功能：更新模型中的 EntropyBottleneck 和 GaussianConditional 模块的累积分布函数（CDF）。
+        
+        参数：
+        scale_table：缩放表，用于初始化高斯分布，默认为 None。
+        force：是否强制更新，默认为 False。
+        update_quantiles：是否快速更新分位数，默认为 False。
+        
+        实现：
+        如果 scale_table 为 None，则调用 get_scale_table 函数生成默认的缩放表。
+        遍历模型的所有模块，如果模块是 EntropyBottleneck 或 GaussianConditional，则调用其 update 方法更新 CDF。
+        返回是否至少有一个模块被更新。
+
+
+
+
         Needs to be called once after training to be able to later perform the
         evaluation with an actual entropy coder.
 
@@ -135,14 +163,26 @@ class CompressionModel(nn.Module):
             scale_table = get_scale_table()
         updated = False
         for _, module in self.named_modules():
+            #* 遍历模型CompressionModel的所有模块 module，如果模块module是 EntropyBottleneck 或 GaussianConditional，则调用其 update 方法更新 CDF。
             if isinstance(module, EntropyBottleneck):
                 updated |= module.update(force=force, update_quantiles=update_quantiles)
             if isinstance(module, GaussianConditional):
                 updated |= module.update_scale_table(scale_table, force=force)
-        return updated
+        
+        
+        return updated  #* 返回updated, updated 记录 在当前模型CompressionModel中是否有一个模块被更新
 
     def aux_loss(self) -> Tensor:
         r"""Returns the total auxiliary loss over all ``EntropyBottleneck``\s.
+
+
+        功能：计算所有 EntropyBottleneck 模块的辅助损失。
+        
+        返回值：辅助损失，类型为 Tensor。
+        
+        实现：
+        遍历模型的所有模块，累加所有 EntropyBottleneck 模块的损失。
+
 
         In contrast to the primary "net" loss used by the "net"
         optimizer, the "aux" loss is only used by the "aux" optimizer to
@@ -176,6 +216,16 @@ class CompressionModel(nn.Module):
 class SimpleVAECompressionModel(CompressionModel):
     """Simple VAE model with arbitrary latent codec.
 
+    功能：基于简单的变分自编码器（VAE）压缩模型，包含任意的潜在编码器，继承自CompressionModel基类.
+    
+    属性：
+    g_a：分析变换（encoder），用于将输入图像编码为潜在表示。
+    g_s：合成变换（decoder），用于将潜在表示解码为重建图像。
+    latent_codec：潜在编码器，用于对潜在表示进行编码和解码。
+
+
+
+
     .. code-block:: none
 
                ┌───┐  y  ┌────┐ y_hat ┌───┐
@@ -183,14 +233,28 @@ class SimpleVAECompressionModel(CompressionModel):
                └───┘     └────┘       └───┘
     """
 
-    g_a: nn.Module
-    g_s: nn.Module
-    latent_codec: LatentCodec
+    g_a: nn.Module  #* 定义了SimpleVAECompressionModel类的一个属性g_a(是一个nn.Module)， 作为分析变换g_a
+    g_s: nn.Module  #* 定义了SimpleVAECompressionModel类的一个属性g_s(是一个nn.Module)， 作为生成变换g_s
+    latent_codec: LatentCodec  #* 定义了SimpleVAECompressionModel类的一个属性latent_codec(是一个LatentCodec)， 作为潜在编码器latent_codec
 
     def __getitem__(self, key: str) -> LatentCodec:
         return self.latent_codec[key]
 
     def forward(self, x):
+        """_summary_
+        功能：前向传播。
+        
+        参数：x，输入图像。
+        
+        返回值：包含重建图像和潜在表示似然概率的字典。
+
+        实现：
+        通过分析变换编码输入图像，得到潜在表示 y。
+        通过潜在编码器处理潜在表示 y，得到量化后的潜在表示 y_hat 和似然概率。
+        通过合成变换将 y_hat 解码为重建图像 x_hat。
+        返回包含 x_hat 和似然概率的字典。
+        
+        """
         y = self.g_a(x)
         y_out = self.latent_codec(y)
         y_hat = y_out["y_hat"]
@@ -201,11 +265,34 @@ class SimpleVAECompressionModel(CompressionModel):
         }
 
     def compress(self, x):
+        """_summary_
+        功能：压缩输入图像。
+        
+        参数：x，输入图像。
+        
+        返回值：压缩后的输出。
+        
+        实现：
+        通过分析变换编码输入图像，得到潜在表示 y。
+        通过潜在编码器压缩潜在表示 y，得到压缩后的输出。
+        """
         y = self.g_a(x)
         outputs = self.latent_codec.compress(y)
         return outputs
 
     def decompress(self, *args, **kwargs):
+        """_summary_
+        功能：解压缩输入。
+        
+        参数：可变参数和关键字参数，具体取决于潜在编码器的解压缩方法。
+        
+        返回值：包含重建图像的字典。
+        
+        实现：
+        通过潜在编码器解压缩输入，得到量化后的潜在表示 y_hat。
+        通过合成变换将 y_hat 解码为重建图像 x_hat，并进行裁剪。
+        返回包含 x_hat 的字典。
+        """
         y_out = self.latent_codec.decompress(*args, **kwargs)
         y_hat = y_out["y_hat"]
         x_hat = self.g_s(y_hat).clamp_(0, 1)

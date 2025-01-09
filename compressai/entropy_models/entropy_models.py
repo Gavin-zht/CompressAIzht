@@ -28,7 +28,8 @@
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-#* entropy_models.py 定义了几个与熵编码相关的类和函数，主要用于图像压缩中的熵模型
+#* entropy_models.py 定义了几个与熵编码相关的工具类和函数，主要用于图像压缩中的熵模型
+
 import warnings
 
 from typing import Any, Callable, List, Optional, Tuple, Union
