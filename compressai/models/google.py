@@ -344,14 +344,14 @@ class ScaleHyperprior(CompressionModel):
 
     def compress(self, x):
         """_summary_
-        压缩操作
+        压缩操作，相当于Encoder对输入图像进行压缩，得到码流
         
         将输入x 经过编码器进行压缩，得到码流内容(包括：特征表示y的压缩码流字符串 y_strings  和 超先验特征的压缩码流字符串 z_strings)
         Args:
-            x (_type_): _description_
+            x: 输入图像
 
         Returns:
-            _type_: _description_
+            压缩得到的码流(包括：特征表示y的压缩码流字符串 y_strings  和 超先验特征的压缩码流字符串 z_strings)
         """
         y = self.g_a(x)     #* 通过分析变换编码输入图像，得到特征表示 y
         z = self.h_a(torch.abs(y))      #* 通过超先验分析变换对 y 的绝对值进行编码，得到超先验特征 z
@@ -359,15 +359,25 @@ class ScaleHyperprior(CompressionModel):
         z_strings = self.entropy_bottleneck.compress(z)     #* 熵瓶颈层对 z 进行熵编码，得到超先验特征的压缩码流字符串 z_strings
         z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
-        scales_hat = self.h_s(z_hat)
+        scales_hat = self.h_s(z_hat)        #* 超先验合成变换h_s将 z_hat 解码为尺度参数 scales_hat
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
         y_strings = self.gaussian_conditional.compress(y, indexes)      #* 通过高斯条件层对 y 进行条件熵编码，得到特征表示y的压缩码流字符串 y_strings
         return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
     def decompress(self, strings, shape):
+        """_summary_
+        解码操作，相当于Decoder对输入的码流进行解码并计算得到重建图像
+        
+        Args:
+            strings (_type_): _description_
+            shape (_type_): _description_
+
+        Returns:
+            x_hat: 重建图像
+        """
         assert isinstance(strings, list) and len(strings) == 2
-        z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
-        scales_hat = self.h_s(z_hat)
+        z_hat = self.entropy_bottleneck.decompress(strings[1], shape)   #* 从码流中解码得到量化后超先验特征 z_hat
+        scales_hat = self.h_s(z_hat)        #* 超先验合成变换h_s将 z_hat 解码为尺度参数 scales_hat
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
         y_hat = self.gaussian_conditional.decompress(strings[0], indexes, z_hat.dtype)
         x_hat = self.g_s(y_hat).clamp_(0, 1)

@@ -125,28 +125,40 @@ inline uint32_t Rans64DecGetBits(Rans64State *r, uint32_t **pptr,
   return val;
 }
 } // namespace
+/*
+* 功能： 这个函数 BufferedRansEncoder::encode_with_indexes 是一个用于将符号序列编码为RANS（Range ANS）编码数据的函数。这个函数是RANS编码器的一部分，用于将符号序列编码为一个紧凑的比特流。
+* RANS是一种用于无损数据压缩的熵编码算法，它结合了算术编码的效率和Huffman编码的简单性。
 
+* 参数: symbols：要编码的符号序列, indexes：每个符号对应的CDF（累积分布函数）索引, cdfs：所有符号的CDF列表, cdfs_sizes：每个CDF的大小, offsets：每个CDF的偏移量。
+
+* 总体逻辑: 这个函数 BufferedRansEncoder::encode_with_indexes 实现了将符号序列编码为RANS编码数据的过程。它通过反向遍历符号序列，使用每个符号的CDF进行编码，并处理超出CDF范围的值。
+* 编码结果存储在 _syms 缓冲区中，最终可以被进一步处理并输出为紧凑的比特流。
+
+*/
 void BufferedRansEncoder::encode_with_indexes(
     const std::vector<int32_t> &symbols, const std::vector<int32_t> &indexes,
     const std::vector<std::vector<int32_t>> &cdfs,
     const std::vector<int32_t> &cdfs_sizes,
-    const std::vector<int32_t> &offsets) {
-  assert(cdfs.size() == cdfs_sizes.size());
+    const std::vector<int32_t> &offsets) 
+{
+  assert(cdfs.size() == cdfs_sizes.size()); //* 确保 cdfs 和 cdfs_sizes 的大小相同。
   assert_cdfs(cdfs, cdfs_sizes);
 
   // backward loop on symbols from the end;
-  for (size_t i = 0; i < symbols.size(); ++i) {
-    const int32_t cdf_idx = indexes[i];
+  for (size_t i = 0; i < symbols.size(); ++i) { 
+    //* 从符号序列的末尾开始遍历，这是因为RANS编码是反向进行的，即先编码最后一个符号，再编码倒数第二个符号，依此类推。
+    //* 假设当前遍历到了 第i个符号
+    const int32_t cdf_idx = indexes[i]; //* 对于第i个符号，获取其对应的CDF索引 cdf_idx。
     assert(cdf_idx >= 0);
     assert(cdf_idx < cdfs.size());
 
-    const auto &cdf = cdfs[cdf_idx];
+    const auto &cdf = cdfs[cdf_idx];  //* 获取第i个符号对应的CDF cdf 
+    const int32_t max_value = cdfs_sizes[cdf_idx] - 2;  //* 获取第i个符号对应的最大值 max_value，max_value 是 cdfs_sizes[cdf_idx] - 2
 
-    const int32_t max_value = cdfs_sizes[cdf_idx] - 2;
     assert(max_value >= 0);
     assert((max_value + 1) < cdf.size());
 
-    int32_t value = symbols[i] - offsets[cdf_idx];
+    int32_t value = symbols[i] - offsets[cdf_idx];  //* 计算符号的实际值 value，value = symbols[i] - offsets[cdf_idx]
 
     uint32_t raw_val = 0;
     if (value < 0) {
@@ -164,7 +176,13 @@ void BufferedRansEncoder::encode_with_indexes(
                      static_cast<uint16_t>(cdf[value + 1] - cdf[value]),
                      false});
 
-    /* Bypass coding mode (value == max_value -> sentinel flag) */
+    /* 
+    Bypass coding mode (value == max_value -> sentinel flag) 
+    * 旁路编码模式用于处理超出CDF范围的值。
+    * 在这种模式下，编码器使用固定的概率模型（通常是均匀分布）来编码值，而不是使用CDF。这样可以处理任意大的值，而不会使CDF变得过于复杂。    
+
+
+    */
     if (value == max_value) {
       /* Determine the number of bypasses (in bypass_precision size) needed to
        * encode the raw value. */

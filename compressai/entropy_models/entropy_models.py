@@ -89,14 +89,19 @@ class _EntropyCoder:
         self._encoder = encoder
         self._decoder = decoder
 
-    def encode_with_indexes(self, *args, **kwargs):
+    def encode_with_indexes(self, *args, **kwargs):     #* 调用编码器实例的encode_with_indexes(*args, **kwargs)进行编码操作
         return self._encoder.encode_with_indexes(*args, **kwargs)
 
-    def decode_with_indexes(self, *args, **kwargs):
+    def decode_with_indexes(self, *args, **kwargs):     #* 调用编码器实例的decode_with_indexes(*args, **kwargs)进行解码操作
         return self._decoder.decode_with_indexes(*args, **kwargs)
 
 
 def default_entropy_coder():
+    """_summary_
+    功能：返回默认的熵编码器。
+    
+    实现：从 compressai 模块调用 get_entropy_coder 函数，获取并返回默认的熵编码器。
+    """
     from compressai import get_entropy_coder
 
     return get_entropy_coder()
@@ -125,6 +130,15 @@ def _forward(self, *args: Any) -> Any:
 
 class EntropyModel(nn.Module):
     r"""Entropy model base class.
+
+    功能：熵模型基类，用于图像压缩中的熵编码。
+    
+    属性：
+    entropy_coder：熵编码器实例。
+    entropy_coder_precision：熵编码器精度。
+    use_likelihood_bound：是否使用似然下界。
+    _offset、_quantized_cdf、_cdf_length：用于存储偏移、量化 CDF 和 CDF 长度。
+
 
     Args:
         likelihood_bound (float): minimum likelihood bound
@@ -193,9 +207,9 @@ class EntropyModel(nn.Module):
     实现：
     检查 mode 是否有效，如果无效则抛出 ValueError。
     根据 mode 的值，分别进行以下操作：
-    "noise"：在输入张量上添加均匀分布的噪声，然后返回结果。
-    "dequantize"：如果 means 不为 None，则将输入张量与 means 相加，否则将输入张量转换为指定类型，返回结果。
-    "symbols"：将输入张量减去 means（如果 means 不为 None），然后进行四舍五入，转换为整数类型，返回结果。
+    - "noise"：在输入张量上添加均匀分布的噪声，然后返回结果。
+    - "dequantize"：如果 means 不为 None，则将输入张量与 means 相加，否则将输入张量转换为指定类型，返回结果。
+    - "symbols"：将输入张量减去 means（如果 means 不为 None），然后进行四舍五入，转换为整数类型，返回结果。
         """
         if mode not in ("noise", "dequantize", "symbols"):
             raise ValueError(f'Invalid quantization mode: "{mode}"')
@@ -270,6 +284,31 @@ class EntropyModel(nn.Module):
         return cls.dequantize(inputs, means)
 
     def _pmf_to_cdf(self, pmf, tail_mass, pmf_length, max_length):
+        """_summary_
+
+        功能：将概率密度函数（PMF）转换为累积分布函数（CDF）。
+        
+        参数：
+        pmf：概率质量函数。
+        tail_mass：尾部质量。
+        pmf_length：PMF的长度。
+        max_length：最大长度。
+        
+        实现：
+        创建一个大小为 (len(pmf_length), max_length + 2) 的零张量 cdf。
+        遍历 pmf 中的每个概率分布，将其与尾部质量拼接，然后调用 pmf_to_quantized_cdf 函数进行转换，将结果存储在 cdf 中。
+        返回 cdf。
+
+
+        Args:
+            pmf (_type_): _description_
+            tail_mass (_type_): _description_
+            pmf_length (_type_): _description_
+            max_length (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
         cdf = torch.zeros(
             (len(pmf_length), max_length + 2), dtype=torch.int32, device=pmf.device
         )
@@ -304,27 +343,38 @@ class EntropyModel(nn.Module):
         """
         Compress input tensors to char strings.
 
+        功能：将输入张量压缩为码流字符串。
+        
+        参数：
+        inputs：输入张量，类型为 torch.Tensor。
+        indexes：CDF索引张量，类型为 torch.IntTensor。
+        means：可选参数，均值张量，类型为 Optional[torch.Tensor]。
+
+        返回值：压缩后的字符串(码流)列表。
+
         Args:
             inputs (torch.Tensor): input tensors
             indexes (torch.IntTensor): tensors CDF indexes
             means (torch.Tensor, optional): optional tensor means
         """
-        symbols = self.quantize(inputs, "symbols", means)
+        symbols = self.quantize(inputs, "symbols", means)   #* 使用 quantize 方法将输入张量 inputs 量化为符号张量 symbols。量化模式为 "symbols"，如果 means 不为 None，则在量化前减去 means。
 
-        if len(inputs.size()) < 2:
+        if len(inputs.size()) < 2:  #* 检查 inputs 的维度是否至少为2，如果不是则抛出 ValueError。
             raise ValueError(
                 "Invalid `inputs` size. Expected a tensor with at least 2 dimensions."
             )
 
-        if inputs.size() != indexes.size():
+        if inputs.size() != indexes.size():     #* 检查 inputs 和 indexes 的大小是否相同，如果不同则抛出 ValueError
             raise ValueError("`inputs` and `indexes` should have the same size.")
 
+        #* 调用 _check_cdf_size、_check_cdf_length 和 _check_offsets_size 方法，检查熵模型的 CDF、偏移量和 CDF 长度是否已初始化。
         self._check_cdf_size()
         self._check_cdf_length()
         self._check_offsets_size()
 
         strings = []
         for i in range(symbols.size(0)):
+            #* 遍历 symbols 的每个批次，使用 entropy_coder 的 encode_with_indexes 方法对符号进行编码。编码时传入符号、索引、量化 CDF、CDF 长度和偏移量。
             rv = self.entropy_coder.encode_with_indexes(
                 symbols[i].reshape(-1).int().tolist(),
                 indexes[i].reshape(-1).int().tolist(),
@@ -332,8 +382,8 @@ class EntropyModel(nn.Module):
                 self._cdf_length.reshape(-1).int().tolist(),
                 self._offset.reshape(-1).int().tolist(),
             )
-            strings.append(rv)
-        return strings
+            strings.append(rv)  #* 将编码结果存储在 strings 列表中。
+        return strings  #* 返回 strings 列表，其中每个元素是一个压缩后的字符串。
 
     def decompress(
         self,
