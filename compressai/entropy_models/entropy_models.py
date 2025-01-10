@@ -464,7 +464,12 @@ class EntropyModel(nn.Module):
 
 
 class EntropyBottleneck(EntropyModel):
-    r"""Entropy bottleneck layer, introduced by J. Ballé, D. Minnen, S. Singh,
+    r"""
+    EntropyBottleneck(熵瓶颈层) 类是 EntropyModel 的一个子类，实现了熵瓶颈层，用于图像压缩中的熵编码。
+    这个类基于 J. Ballé 等人在论文 "Variational image compression with a scale hyperprior" 中提出的方法。    
+    
+    
+    Entropy bottleneck layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
     hyperprior" <https://arxiv.org/abs/1802.01436>`_.
 
@@ -486,78 +491,121 @@ class EntropyBottleneck(EntropyModel):
         filters: Tuple[int, ...] = (3, 3, 3, 3),
         **kwargs: Any,
     ):
+        """_summary_
+        参数：
+        channels：通道数。
+        tail_mass：尾部质量，默认为 1e-9。
+        init_scale：初始化缩放因子，默认为 10。
+        filters：滤波器大小，默认为 (3, 3, 3, 3)。
+        
+        实现：
+        调用父类 EntropyModel 的初始化方法。
+        初始化通道数、滤波器大小、初始化缩放因子和尾部质量。
+        创建参数列表 matrices、biases 和 factors，用于存储网络的权重、偏置和因子。
+        初始化 quantiles 参数，用于存储分位数。
+        注册 target 缓冲区，用于存储目标值。
+        """
         super().__init__(*args, **kwargs)
 
         self.channels = int(channels)
-        self.filters = tuple(int(f) for f in filters)
+        self.filters = tuple(int(f) for f in filters)   #* self.filters 的默认值为(3,3,3,3)
         self.init_scale = float(init_scale)
         self.tail_mass = float(tail_mass)
 
         # Create parameters
-        filters = (1,) + self.filters + (1,)
-        scale = self.init_scale ** (1 / (len(self.filters) + 1))
-        channels = self.channels
+        filters = (1,) + self.filters + (1,)    #* 在滤波器列表的前后各添加一个1，表示输入和输出的维度, filters的默认值为(1,3,3,3,3,1)
+        scale = self.init_scale ** (1 / (len(self.filters) + 1))    #* 计算每个滤波器的缩放因子scale 为 self.init_scale 的(1 / (len(self.filters) + 1))次方
+        channels = self.channels    #* 设置通道数
+        
+        #! 请参考Balle 2018 论文对应的文档中的 “单变量概率密度模型实现(Univariate density model) / 累计概率密度模型” 部分
+        #! 这里的self.matrices[k] 就相当于 f_k, self.biases[k] 就相当于 b_k, self.factors[k] 就相当于 a_k
+        self.matrices = nn.ParameterList()  #* 创建权重参数列表self.matrices。
+        self.biases = nn.ParameterList()    #* 创建偏置参数列表。
+        self.factors = nn.ParameterList()   #* 创建因子参数列表。
 
-        self.matrices = nn.ParameterList()
-        self.biases = nn.ParameterList()
-        self.factors = nn.ParameterList()
-
-        for i in range(len(self.filters) + 1):
+        for i in range(len(self.filters) + 1):  #* 遍历每个滤波器。
             init = np.log(np.expm1(1 / scale / filters[i + 1]))
-            matrix = torch.Tensor(channels, filters[i + 1], filters[i])
-            matrix.data.fill_(init)
-            self.matrices.append(nn.Parameter(matrix))
+            matrix = torch.Tensor(channels, filters[i + 1], filters[i]) #* 创建权重张量matrix，维度为 (channels, filters[i + 1], filters[i])。
+            matrix.data.fill_(init)     #* 将matrix矩阵填充满初始化值init
+            self.matrices.append(nn.Parameter(matrix))  #* 将权重张量matrix添加到参数列表self.matrices中。
 
-            bias = torch.Tensor(channels, filters[i + 1], 1)
-            nn.init.uniform_(bias, -0.5, 0.5)
-            self.biases.append(nn.Parameter(bias))
+            bias = torch.Tensor(channels, filters[i + 1], 1)    #* 创建偏移量张量bias，维度为 (channels, filters[i + 1], 1)。
+            nn.init.uniform_(bias, -0.5, 0.5)   #* 将bias矩阵填初始化为(-0.5, 0.5)上的均匀分布
+            self.biases.append(nn.Parameter(bias))  #* 将偏置张量bias添加到偏置参数列表self.biases中。
 
-            if i < len(self.filters):
-                factor = torch.Tensor(channels, filters[i + 1], 1)
-                nn.init.zeros_(factor)
-                self.factors.append(nn.Parameter(factor))
+            if i < len(self.filters):   #* 如果当前滤波器不是最后一个，创建因子张量
+                factor = torch.Tensor(channels, filters[i + 1], 1)  #* 创建因子张量，维度为 (channels, filters[i + 1], 1)。
+                nn.init.zeros_(factor)  #* 使用零初始化因子张量。
+                self.factors.append(nn.Parameter(factor))   #* 将因子张量添加到参数列表中
 
-        self.quantiles = nn.Parameter(torch.Tensor(channels, 1, 3))
-        init = torch.Tensor([-self.init_scale, 0, self.init_scale])
-        self.quantiles.data = init.repeat(self.quantiles.size(0), 1, 1)
+        self.quantiles = nn.Parameter(torch.Tensor(channels, 1, 3)) #* 创建分位数参数张量，这个张量将存储每个通道的三个分位数, 维度为 (channels, 1, 3)。
+        init = torch.Tensor([-self.init_scale, 0, self.init_scale]) #* 设置初始化值init = [-self.init_scale, 0, self.init_scale],这些值分别表示分位数的下界、中位数和上界。
+        self.quantiles.data = init.repeat(self.quantiles.size(0), 1, 1) #* 重复初始化值以填充 分位数参数张量self.quantiles.data，维度为 (channels, 1, 3)
+        #* 其中，self.quantiles.data[i] = [[-self.init_scale, 0, self.init_scale]] (1,3)
 
         target = np.log(2 / self.tail_mass - 1)
-        self.register_buffer("target", torch.Tensor([-target, 0, target]))
+        self.register_buffer("target", torch.Tensor([-target, 0, target]))  #* 注册目标缓冲区，维度为 (3,)。
 
     def _get_medians(self) -> Tensor:
-        medians = self.quantiles[:, :, 1:2]
+        """_summary_
+        功能
+        _get_medians 函数用于从 self.quantiles 参数中提取每个通道的中位数。这些中位数在量化过程中起到重要作用，特别是在定义量化操作的零点附近的行为。
+
+        参数
+        无参数
+        
+        返回值
+        返回值：中位数张量，维度为 (channels, 1, 1)。
+        """
+        medians = self.quantiles[:, :, 1:2] #* 从 self.quantiles 中提取每个通道的中位数medians, 维度为 (channels, 1, 1)。 1:2 表示提取索引为 1 的列，即中位数列。
+        #* 假设self.quantiles = tensor([[[-10.,  0., 10.]],[[-10.,  0., 10.]],....])
+        #* 那么medians = tensor([[[  0.]],[[  0.]],....])
         return medians
 
     def update(self, force: bool = False, update_quantiles: bool = False) -> bool:
+        """_summary_
+        功能：
+        update 方法用于更新熵瓶颈层的参数，特别是分位数（quantiles）和量化累积分布函数（CDF）。
+        这些参数在训练过程中会根据数据进行调整，以优化量化和编码的性能。该方法确保在编码和解码过程中使用最新的参数，从而提高压缩效率。
+        
+        参数
+        force: bool = False：是否强制更新参数，即使参数已经初始化。
+        update_quantiles: bool = False：是否更新分位数。
+        
+        返回值
+        返回值：一个布尔值，表示是否进行了更新。
+        
+        """
         # Check if we need to update the bottleneck parameters, the offsets are
         # only computed and stored when the conditonal model is update()'d.
         if self._offset.numel() > 0 and not force:
             return False
 
-        if update_quantiles:
+        if update_quantiles:    #* 如果 update_quantiles 为 True，则调用 _update_quantiles 方法更新分位数。
             self._update_quantiles()
 
-        medians = self.quantiles[:, 0, 1]
+        medians = self.quantiles[:, 0, 1]   #* medians = self.quantiles[:, 0, 1]：提取每个通道的中位数，维度为 (channels,)。
 
-        minima = medians - self.quantiles[:, 0, 0]
+        minima = medians - self.quantiles[:, 0, 0]  #* 计算每个通道的最小值，维度为 (channels,)
         minima = torch.ceil(minima).int()
         minima = torch.clamp(minima, min=0)
 
-        maxima = self.quantiles[:, 0, 2] - medians
+        maxima = self.quantiles[:, 0, 2] - medians  #* 计算每个通道的最大值，维度为 (channels,)。
         maxima = torch.ceil(maxima).int()
         maxima = torch.clamp(maxima, min=0)
+        #* minima 和 maxima 都被向上取整并限制为非负值。
 
-        self._offset = -minima
+        self._offset = -minima  #* 计算偏移量，维度为 (channels,)。
 
-        pmf_start = medians - minima
-        pmf_length = maxima + minima + 1
+        pmf_start = medians - minima    #* 计算 PMF 的起始点，维度为 (channels,)
+        pmf_length = maxima + minima + 1    #* 计算 PMF 的长度，维度为 (channels,)。
 
-        max_length = pmf_length.max().item()
+        max_length = pmf_length.max().item()    #* 计算最大长度(pmf_length中的最大长度)，用于生成样本
         device = pmf_start.device
-        samples = torch.arange(max_length, device=device)
-        samples = samples[None, :] + pmf_start[:, None, None]
+        samples = torch.arange(max_length, device=device)   #* 生成样本samples，维度为 (max_length,)
+        samples = samples[None, :] + pmf_start[:, None, None]   #* 调整样本的维度，维度为 (channels, max_length)
 
-        pmf, lower, upper = self._likelihood(samples, stop_gradient=True)
+        pmf, lower, upper = self._likelihood(samples, stop_gradient=True)   #TODO
         pmf = pmf[:, 0, :]
         tail_mass = torch.sigmoid(lower[:, 0, :1]) + torch.sigmoid(-upper[:, 0, -1:])
 
@@ -572,20 +620,35 @@ class EntropyBottleneck(EntropyModel):
         return loss
 
     def _logits_cumulative(self, inputs: Tensor, stop_gradient: bool) -> Tensor:
+        """_summary_
+
+        功能
+        _logits_cumulative 方法用于计算输入张量的累计概率密度函数CDF的对数值（logits）。
+        #! _logits_cumulative 的计算逻辑请参考Balle 2018 论文对应的文档中的 “单变量概率密度模型实现(Univariate density model) / 累计概率密度模型” 部分
+        这个方法通过一系列的线性变换和非线性激活函数，将输入张量转换为累积对数。这些累积对数在计算似然和量化过程中起到重要作用。
+
+        参数
+        inputs: Tensor：输入张量，维度为 (channels, 1, *)，其中 * 表示任意长度的额外维度。
+        stop_gradient: bool：是否停止梯度传播。如果为 True，则在计算过程中不会计算梯度，这在某些优化步骤中很有用。
+        
+        返回值
+        返回值：累积对数张量，维度与输入张量相同,维度为 (channels, 1, *)，其中 * 表示任意长度的额外维度。
+        """
         # TorchScript not yet working (nn.Mmodule indexing not supported)
         logits = inputs
-        for i in range(len(self.filters) + 1):
-            matrix = self.matrices[i]
+        for i in range(len(self.filters) + 1):  #* 遍历每个滤波器，共 len(self.filters) + 1 次
+            matrix = self.matrices[i]   #* 获取当前滤波器的权重矩阵，维度为 (channels, filters[i + 1], filters[i])
             if stop_gradient:
                 matrix = matrix.detach()
-            logits = torch.matmul(F.softplus(matrix), logits)
+            logits = torch.matmul(F.softplus(matrix), logits)   #* 使用 softplus 激活函数对权重矩阵进行处理，然后与 logits 进行矩阵乘法
+            #* logits 当前的维度为: (channels, filters[i],*), matrix 的维度为：(channels, filters[i + 1], filters[i])， 两者矩阵相乘等于: (channels, filters[i + 1], *)
 
-            bias = self.biases[i]
+            bias = self.biases[i]   #* 获取当前滤波器的偏置，维度为 (channels, filters[i + 1], 1)
             if stop_gradient:
                 bias = bias.detach()
-            logits = logits + bias
+            logits = logits + bias  #* logits 当前的维度为: (channels, filters[i+1],*)
 
-            if i < len(self.filters):
+            if i < len(self.filters):   #* 如果当前滤波器不是最后一个，进行非线性激活
                 factor = self.factors[i]
                 if stop_gradient:
                     factor = factor.detach()
@@ -595,10 +658,27 @@ class EntropyBottleneck(EntropyModel):
     def _likelihood(
         self, inputs: Tensor, stop_gradient: bool = False
     ) -> Tuple[Tensor, Tensor, Tensor]:
+        """_summary_
+
+        功能
+        _likelihood 方法用于计算输入张量的似然。这个方法通过计算输入值在给定概率分布中的累积概率分布CDF（logits）来确定每个输入值的似然。
+        具体来说，它计算每个输入值在量化区间内的概率，这些概率用于后续的熵编码和解码过程。
+
+        参数
+        inputs: Tensor：输入张量，维度为 (batch_size, channels, *)，其中 * 表示任意长度的额外维度。
+        stop_gradient: bool = False：是否停止梯度传播。如果为 True，则在计算过程中不会计算梯度，这在某些优化步骤中很有用。
+        
+        返回值
+        返回值：一个包含三个张量的元组 (likelihood, lower, upper)：
+        likelihood：输入值的似然张量，维度与输入张量相同。
+        lower：输入值的累积对数下界，维度与输入张量相同。
+        upper：输入值的累积对数上界，维度与输入张量相同。
+
+        """
         half = float(0.5)
-        lower = self._logits_cumulative(inputs - half, stop_gradient=stop_gradient)
-        upper = self._logits_cumulative(inputs + half, stop_gradient=stop_gradient)
-        likelihood = torch.sigmoid(upper) - torch.sigmoid(lower)
+        lower = self._logits_cumulative(inputs - half, stop_gradient=stop_gradient) #* 计算输入值减去 0.5 后的累积对数。这里 half 是 0.5，用于定义量化区间的边界。
+        upper = self._logits_cumulative(inputs + half, stop_gradient=stop_gradient) #* 计算输入值加上 0.5 后的累积对数。
+        likelihood = torch.sigmoid(upper) - torch.sigmoid(lower)    #* 使用 sigmoid 函数将累积对数转换为概率，然后计算上界和下界之间的差值，得到输入值的似然(i.e. 概率)。
         return likelihood, lower, upper
 
     def forward(
