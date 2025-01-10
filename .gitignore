@@ -142,5 +142,4 @@ dmypy.json
 .idea/
 
 results/
-compressai/datasets/traindata/
-compressai/datasets/testdata/
+compressai/datasets/mydata/

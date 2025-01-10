@@ -214,10 +214,20 @@ def test_epoch(epoch, test_dataloader, model, criterion):
     return loss.avg
 
 
-def save_checkpoint(state, is_best, filename="checkpoint.pth.tar"):
+def save_checkpoint(state, is_best, filename="results/myresult/checkpoint.pth.tar"):
+    """_summary_
+    功能：保存模型检查点。
+    tar文件可以理解成一个“文件夹的压缩包”，里面存放了多个.pth文件，每个.pth文件就是模型在某一个epoch轮下的参数文件。
+    参数：
+    state：模型状态字典。
+    is_best：是否为最佳模型。
+    filename：保存文件名。
+    
+    实现：保存模型状态，如果为最佳模型则复制到最佳模型文件。
+    """
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, "checkpoint_best_loss.pth.tar")
+        shutil.copyfile(filename, "results/myresult/checkpoint_best_loss.pth.tar")
 
 
 def parse_args(argv):
