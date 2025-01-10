@@ -262,6 +262,7 @@ class EntropyModel(nn.Module):
         
         实现：
         如果 means 不为 None，则将输入张量转换为与 means 相同的类型，并与 means 相加，否则将输入张量转换为指定的 dtype，返回结果。
+        
         """
         if means is not None:
             outputs = inputs.type_as(means)
@@ -351,6 +352,14 @@ class EntropyModel(nn.Module):
         means：可选参数，均值张量，类型为 Optional[torch.Tensor]。
 
         返回值：压缩后的字符串(码流)列表。
+        
+        实现
+        使用 quantize 方法将输入张量 inputs 量化为符号张量 symbols。
+        检查 inputs 的维度是否至少为2，如果不是则抛出 ValueError。
+        检查 inputs 和 indexes 的大小是否相同，如果不同则抛出 ValueError。
+        调用 _check_cdf_size、_check_cdf_length 和 _check_offsets_size 方法，检查熵模型的 CDF、偏移量和 CDF 长度是否已初始化。
+        遍历 symbols 的每个批次，使用 entropy_coder 的 encode_with_indexes 方法对符号进行编码，将编码结果存储在 strings 列表中。
+        返回 strings 列表，其中每个元素是一个压缩后的字符串。        
 
         Args:
             inputs (torch.Tensor): input tensors
@@ -395,6 +404,13 @@ class EntropyModel(nn.Module):
         """
         Decompress char strings to tensors.
 
+        参数:
+            strings (str): 压缩后的字符串列表。
+            indexes (torch.IntTensor): CDF索引张量。
+            dtype (torch.dtype): 反量化输出的类型，默认为 torch.float。
+            means (torch.Tensor, optional): 可选参数，均值张量。
+
+
         Args:
             strings (str): compressed tensors
             indexes (torch.IntTensor): tensors CDF indexes
@@ -413,6 +429,7 @@ class EntropyModel(nn.Module):
                 "Invalid `indexes` size. Expected a tensor with at least 2 dimensions."
             )
 
+        #* 调用 _check_cdf_size、_check_cdf_length 和 _check_offsets_size 方法，检查熵模型的 CDF、偏移量和 CDF 长度是否已初始化。
         self._check_cdf_size()
         self._check_cdf_length()
         self._check_offsets_size()
@@ -426,9 +443,12 @@ class EntropyModel(nn.Module):
                         raise ValueError("Invalid means parameters")
 
         cdf = self._quantized_cdf
-        outputs = cdf.new_empty(indexes.size())
+        outputs = cdf.new_empty(indexes.size()) #* 创建一个与 indexes 大小相同的空张量 outputs，用于存储解码后的值。
 
         for i, s in enumerate(strings):
+            #* 遍历 strings 的每个字符串 s：
+            #* 使用 entropy_coder 的 decode_with_indexes 方法对字符串 s 进行解码。解码时传入字符串、索引、量化 CDF、CDF 长度和偏移量。
+            #* 将解码结果存储在 outputs 张量中。
             values = self.entropy_coder.decode_with_indexes(
                 s,
                 indexes[i].reshape(-1).int().tolist(),
@@ -439,7 +459,7 @@ class EntropyModel(nn.Module):
             outputs[i] = torch.tensor(
                 values, device=outputs.device, dtype=outputs.dtype
             ).reshape(outputs[i].size())
-        outputs = self.dequantize(outputs, means, dtype)
+        outputs = self.dequantize(outputs, means, dtype)    #* 使用 dequantize 方法对 outputs 进行反量化。反量化时传入 means 和 dtype。
         return outputs
 
 
