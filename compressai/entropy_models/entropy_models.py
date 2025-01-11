@@ -684,37 +684,59 @@ class EntropyBottleneck(EntropyModel):
     def forward(
         self, x: Tensor, training: Optional[bool] = None
     ) -> Tuple[Tensor, Tensor]:
-        if training is None:
+        """_summary_
+        功能
+        forward 方法是 EntropyBottleneck 类的前向传播方法，用于处理输入张量 x，并返回量化后的输出张量和似然张量。
+        这个方法在训练和推理过程中都会被调用，根据 training 参数的不同，行为也会有所不同。
+
+        参数
+        x: Tensor：输入张量，维度为 (batch_size, channels, *)，其中 * 表示任意长度的额外维度。
+        training: Optional[bool] = None：是否处于训练模式。如果为 None，则使用 self.training 的值。
+        
+        返回值
+        返回值：一个包含两个张量的元组 (outputs, likelihood)：
+        outputs：量化后的输出张量，维度与输入张量相同。
+        likelihood：输入值的似然张量，维度与输入张量相同。
+        
+        实现逻辑：
+        
+        将x进行一定程度的reshape, 然后将x送进量化器self.quantize进行量化得到量化结果outputs, 
+        然后用_likelihood计算似然概率，然后将输出的(量化结果outputs)和(似然概率 likelihood)重新reshape成和输入x相同维度。
+        """
+        if training is None:    #* 如果 training 为 None，则使用 self.training 的值。
             training = self.training
 
-        if not torch.jit.is_scripting():
+        if not torch.jit.is_scripting():    #* 如果不在 TorchScript 环境中
             # x from B x C x ... to C x B x ...
             perm = torch.cat(
                 (
                     torch.tensor([1, 0], dtype=torch.long, device=x.device),
-                    torch.arange(2, x.ndim, dtype=torch.long, device=x.device),
+                    torch.arange(2, x.ndim, dtype=torch.long, device=x.device), #* 生成从x的第2维到最后一维的索引。
                 )
-            )
-            inv_perm = perm
+            )   #* 生成排列索引perm，将输入张量的维度从 (batch_size, channels, *) 调整为 (channels, batch_size, *)
+            inv_perm = perm #* 生成逆排列索引，用于恢复原始维度
         else:
             raise NotImplementedError()
-            # TorchScript in 2D for static inference
-            # Convert to (channels, ... , batch) format
-            # perm = (1, 2, 3, 0)
-            # inv_perm = (3, 0, 1, 2)
+        
+        #* 例如: x是一个4维的矩阵，那么x的维度数x.ndim=4, 因此torch.arange(2,x.ndim) = [2,3], 所以perm = (1,0,2,3)
+        # TorchScript in 2D for static inference
+        # Convert to (channels, ... , batch) format
+        # perm = (1, 2, 3, 0)
+        # inv_perm = (3, 0, 1, 2)
 
-        x = x.permute(*perm).contiguous()
-        shape = x.size()
-        values = x.reshape(x.size(0), 1, -1)
+        x = x.permute(*perm).contiguous()   #* 调整输入张量的维度, 将输入张量x的维度从 (batch_size, channels, *) 调整为 (channels, batch_size, *)
+        shape = x.size()    #* 保存x当前的维度shape: (channels, batch_size, *)
+        values = x.reshape(x.size(0), 1, -1)    #* 将输入张量展平为 (channels, 1, -1), values的维度为(channels, 1, -1)
 
         # Add noise or quantize
 
         outputs = self.quantize(
             values, "noise" if training else "dequantize", self._get_medians()
-        )
+        )   #* 根据训练模式，对输入张量values 进行量化或反量化。如果 training 为 True，则添加噪声；否则，进行反量化
+        #* 量化后的值为 outputs
 
         if not torch.jit.is_scripting():
-            likelihood, _, _ = self._likelihood(outputs)
+            likelihood, _, _ = self._likelihood(outputs)    #* 计算量化后的输出张量的似然
             if self.use_likelihood_bound:
                 likelihood = self.likelihood_lower_bound(likelihood)
         else:
@@ -723,26 +745,48 @@ class EntropyBottleneck(EntropyModel):
             # likelihood = torch.zeros_like(outputs)
 
         # Convert back to input tensor shape
-        outputs = outputs.reshape(shape)
-        outputs = outputs.permute(*inv_perm).contiguous()
+        outputs = outputs.reshape(shape)    #* 将量化后的输出张量outputs 恢复为原始形状(channels, batch_size, *)
+        outputs = outputs.permute(*inv_perm).contiguous()   #* 将输出张量的维度调整回 (batch_size, channels, *)
 
-        likelihood = likelihood.reshape(shape)
-        likelihood = likelihood.permute(*inv_perm).contiguous()
+        likelihood = likelihood.reshape(shape)  #* 将似然张量恢复为原始形状(channels, batch_size, *)
+        likelihood = likelihood.permute(*inv_perm).contiguous() #* 将似然张量的维度调整回 (batch_size, channels, *)
 
         return outputs, likelihood
 
     @staticmethod
+#* @staticmethod 是一个 Python 装饰器，用于定义静态方法。静态方法与类相关联，但不依赖于类的实例。这意味着静态方法可以在不创建类实例的情况下被调用，并且它们不接收隐式的 self 参数（即类实例）。
+
+#* 静态方法的特点
+#* 不依赖于类实例：静态方法不绑定到类的实例，因此它们不接收 self 参数。
+#* 可以通过类或实例调用：静态方法可以通过类名或类的实例调用，但通常推荐通过类名调用。
+#* 不访问类的属性或方法：静态方法不能访问类的其他属性或方法，因为它们不依赖于类的实例    
     def _build_indexes(size):
-        dims = len(size)
-        N = size[0]
-        C = size[1]
+        """_summary_
+        功能
+        _build_indexes 方法用于生成索引张量，这些索引张量用于在熵编码和解码过程中引用每个通道的累积分布函数（CDF）。
+        这个方法根据输入张量的大小生成索引张量，确保每个通道的索引在处理过程中被正确引用。
 
-        view_dims = np.ones((dims,), dtype=np.int64)
-        view_dims[1] = -1
-        indexes = torch.arange(C).view(*view_dims)
-        indexes = indexes.int()
+        参数
+        size：输入张量的维度大小，类型为 tuple，表示张量的维度，例如 (batch_size, channels, height, width)。
+        
+        返回值
+        返回值：索引张量，维度为 (batch_size, channels, height, width)，其中每个元素是通道索引。
+        
+        整体执行逻辑
+        确定输入张量的维度：获取输入张量的维度数 dims，批量大小 N 和通道数 C。
+        创建索引张量：生成一个从 0 到 C-1 的索引序列，并调整其维度以匹配输入张量的通道维度。
+        重复索引张量：将索引张量在批量大小和其他空间维度上重复，以生成最终的索引张量。
+        """
+        dims = len(size)    #* 获取输入张量的维度数。
+        N = size[0]     #* 获取批量大小batch_size 
+        C = size[1]     #* 获取通道数channel
 
-        return indexes.repeat(N, 1, *size[2:])
+        view_dims = np.ones((dims,), dtype=np.int64)    #* 创建一个与输入张量维度数相同的数组，初始值全为 1
+        view_dims[1] = -1   #* 将第二个维度（通道维度）设置为 -1，表示该维度将被展平
+        indexes = torch.arange(C).view(*view_dims)  #* 生成从 0 到 C-1 的索引序列indexes，并调整其维度以匹配输入张量的通道维度，indexes 的维度为: (1, channels, 1, 1, ...)
+        indexes = indexes.int()     #* 将indexes的内容设置为int类型
+
+        return indexes.repeat(N, 1, *size[2:])  #* 将索引张量在批量大小和其他空间维度上重复，生成最终的索引张量, 其维度为 (batch_size, channels, height, width)
 
     @staticmethod
     def _extend_ndims(tensor, n):
@@ -782,11 +826,30 @@ class EntropyBottleneck(EntropyModel):
         return (low + high) / 2
 
     def compress(self, x):
-        indexes = self._build_indexes(x.size())
-        medians = self._get_medians().detach()
-        spatial_dims = len(x.size()) - 2
-        medians = self._extend_ndims(medians, spatial_dims)
-        medians = medians.expand(x.size(0), *([-1] * (spatial_dims + 1)))
+        """_summary_
+        功能
+        compress 方法用于将输入张量 x 压缩为码流字符串。这个方法通过熵编码将输入张量的值转换为紧凑的比特流，适用于图像压缩等应用。
+        该方法首先生成索引张量和中位数张量，然后调用基类的 compress 方法进行实际的压缩操作。
+
+        参数
+        x: Tensor：输入张量，维度为 (batch_size, channels, height, width)。
+        
+        返回值
+        返回值：压缩后的字符串列表，每个字符串表示一个批次的压缩数据。
+        
+        整体执行逻辑
+        生成索引张量：根据输入张量的大小生成索引张量。
+        获取中位数：从 self.quantiles 中提取中位数，并调整其维度以匹配输入张量。
+        扩展中位数张量：将中位数张量扩展到与输入张量相同的批量大小和其他空间维度。
+        调用基类的 compress 方法：将输入张量、索引张量和中位数张量传递给基类的 compress 方法，进行实际的压缩操作。
+        """
+        indexes = self._build_indexes(x.size()) #* 调用 _build_indexes 方法生成索引张量，维度为 (batch_size, channels, height, width)
+        medians = self._get_medians().detach()  #* 调用 _get_medians 方法获取中位数张量，维度为 (channels, 1, 1)，例如 (128, 1, 1)
+        spatial_dims = len(x.size()) - 2    #* 计算空间维度数，例如 2（高度和宽度）
+        medians = self._extend_ndims(medians, spatial_dims) #* 调用 _extend_ndims 方法扩展中位数张量的维度，维度为 (channels, 1, 1, 1)
+        medians = medians.expand(x.size(0), *([-1] * (spatial_dims + 1)))   #* ：将中位数张量扩展到与输入张量相同的批量大小和其他空间维度，维度为 (batch_size , channels, height, width)
+        
+        #* 至此， x, indexes, medians 这三个张量的维度都是: (batch_size , channels, height, width)
         return super().compress(x, indexes, medians)
 
     def decompress(self, strings, size):
