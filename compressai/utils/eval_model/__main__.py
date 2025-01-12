@@ -27,6 +27,13 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
+在eval_model这个文件夹下，有__main__.py文件，因此可以直接用python命令执行这个文件件(模块)，
+e.g. python eval_model
+这样子的命令会自动执行eval_model模块中的__main__.py文件中的main函数
+
+__main__.py 代码是一个 Python 脚本，用于评估 训练好的模型
+
+
 Evaluate an end-to-end compression model on an image dataset.
 """
 import argparse

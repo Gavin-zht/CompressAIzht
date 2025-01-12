@@ -28,6 +28,15 @@
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """
+在update_model这个文件夹下，有__main__.py文件，因此可以直接用python命令执行这个文件件(模块)，
+e.g. python update_model
+这样子的命令会自动执行update_model模块中的__main__.py文件中的main函数
+
+__main__.py 代码是一个 Python 脚本，用于更新 训练好的模型的累积分布函数（CDFs）参数，
+模型在训练好之后，我们可以用这个update_model模块来更新模型的参数
+并为模型文件添加哈希前缀，以便可以通过 load_state_dict_from_url 函数加载。
+
+
 Update the CDFs parameters of a trained model.
 
 To be called on a model checkpoint after training. This will update the internal
@@ -69,6 +78,25 @@ def sha256_file(filepath: Path, len_hash_prefix: int = 8) -> str:
 
 
 def load_checkpoint(filepath: Path, arch: str) -> Dict[str, torch.Tensor]:
+    """
+    功能
+    load_checkpoint 函数用于加载模型检查点文件，并返回模型的状态字典。这个函数处理不同格式的检查点文件，确保可以正确加载模型的状态字典。
+
+    参数
+    filepath: Path：检查点文件的路径。
+    arch: str：模型架构名称。
+    
+    返回值
+    返回值：模型的状态字典，类型为 Dict[str, torch.Tensor]。
+    
+    整体执行逻辑
+    加载检查点文件：使用 torch.load 加载检查点文件。
+    提取状态字典：根据检查点文件的格式，提取状态字典。
+    调用 load_state_dict 函数加载状态字典。
+    返回状态字典：返回处理后的状态字典。
+    
+    
+    """
     checkpoint = torch.load(filepath, map_location="cpu")
 
     if "network" in checkpoint:
@@ -101,10 +129,17 @@ models.update(image_architectures_vbr)
 
 
 def setup_args():
+    """_summary_
+    功能： 
+    为update_model 模块 设置 命令行参数解析器
+    
+    
+    
+    """
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "filepath", type=str, help="Path to the checkpoint model to be exported."
-    )
+    )   #* 添加 位置参数 filepath, 表示
     parser.add_argument("-n", "--name", type=str, help="Exported model name.")
     parser.add_argument("-d", "--dir", type=str, help="Exported model directory.")
     parser.add_argument(
@@ -124,13 +159,33 @@ def setup_args():
 
 
 def main(argv):
-    args = setup_args().parse_args(argv)
+    """_summary_
+    功能
+    main 函数是脚本的入口点，用于更新训练好的模型的累积分布函数（CDFs）参数，并为模型文件添加哈希前缀，以便可以通过 load_state_dict_from_url 函数加载。
+    这个函数处理命令行参数，加载模型检查点，更新模型参数，保存新的检查点文件，并重命名文件以包含哈希前缀。
 
-    filepath = Path(args.filepath).resolve()
-    if not filepath.is_file():
+    参数
+    argv：命令行参数列表，通常为 sys.argv[1:]。
+    
+    返回值
+    返回值：无返回值，但会生成并保存新的模型检查点文件。
+    
+    整体执行逻辑
+    解析命令行参数：使用 setup_args 解析命令行参数。
+    加载检查点文件：使用 load_checkpoint 加载模型检查点文件。
+    创建模型实例：根据指定的架构创建模型实例。
+    更新模型参数：如果 --no-update 未设置，则更新模型的 CDFs 参数。
+    保存新的检查点文件：保存更新后的模型状态字典。
+    计算文件哈希值：计算新文件的 SHA-256 哈希值前缀。
+    重命名文件：将新文件重命名为包含哈希前缀的名称。
+    """
+    args = setup_args().parse_args(argv)    #* 解析传给update_model 模块的命令行参数。
+
+    filepath = Path(args.filepath).resolve()    #* 解析并规范化检查点文件路径 filepath
+    if not filepath.is_file():  #* 检查文件是否存在。
         raise RuntimeError(f'"{filepath}" is not a valid file.')
 
-    state_dict = load_checkpoint(filepath, args.architecture)
+    state_dict = load_checkpoint(filepath, args.architecture)   #* 加载模型检查点文件并返回状态字典
 
     model_cls_or_entrypoint = models[args.architecture]
     if not isinstance(model_cls_or_entrypoint, type):
@@ -138,11 +193,12 @@ def main(argv):
     else:
         model_cls = model_cls_or_entrypoint
     if args.architecture in ["bmshj2018-hyperprior-vbr", "mbt2018-mean-vbr"]:
+        #* 如果架构是 bmshj2018-hyperprior-vbr 或 mbt2018-mean-vbr，则调用 from_state_dict 方法时传入 vr_entbttlnck=True
         net = model_cls.from_state_dict(state_dict, vr_entbttlnck=True)
     else:
-        net = model_cls.from_state_dict(state_dict)
+        net = model_cls.from_state_dict(state_dict) #* 使用状态字典state_dict 创建模型实例 net。
 
-    if not args.no_update:
+    if not args.no_update:  #* 如果 --no-update 未设置，则更新模型的 CDFs 参数
         net.update(force=True)
     state_dict = net.state_dict()
 
