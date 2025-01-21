@@ -169,7 +169,7 @@ class FactorizedPrior(CompressionModel):
 
     def compress(self, x):
         y = self.g_a(x)
-        y_strings = self.entropy_bottleneck.compress(y)
+        y_strings = self.entropy_bottleneck.compress(y)#调用熵瓶颈进行熵编码的位置，将y压缩成字符串
         return {"strings": [y_strings], "shape": y.size()[-2:]}
 
     def decompress(self, strings, shape):

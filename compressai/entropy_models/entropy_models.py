@@ -76,7 +76,7 @@ class _EntropyCoder:
 
         if method == "ans":
             from compressai import ans
-
+            #当method是ans，从compressai模块导入ANS编解码器
             encoder = ans.RansEncoder()
             decoder = ans.RansDecoder()
         elif method == "rangecoder":
@@ -90,6 +90,20 @@ class _EntropyCoder:
         self._decoder = decoder
 
     def encode_with_indexes(self, *args, **kwargs):     #* 调用编码器实例的encode_with_indexes(*args, **kwargs)进行编码操作
+        """
+        依次将以下信息传入(*args)中
+        一维list做symbols, 
+        一个一维list做indexes表示每个symbol对应的CDF索引, 
+        一个二维list做cdf（其中每一个维度都应该递增分布）,
+        一个一维list对应于cdf中每个1维数据的长度 cdf_lengths,
+        一个一维list对应于cdf中每个1维数据的offsets。
+
+        self包含init时定义的编解码器
+
+        """
+        #s=self._encoder.encode_with_indexes(*args, **kwargs)
+        #print("test")
+        #return s
         return self._encoder.encode_with_indexes(*args, **kwargs)
 
     def decode_with_indexes(self, *args, **kwargs):     #* 调用编码器实例的decode_with_indexes(*args, **kwargs)进行解码操作
@@ -391,6 +405,7 @@ class EntropyModel(nn.Module):
                 self._cdf_length.reshape(-1).int().tolist(),
                 self._offset.reshape(-1).int().tolist(),
             )
+            #传入参数时将torch.Tensor格式转换为list。
             strings.append(rv)  #* 将编码结果存储在 strings 列表中。
         return strings  #* 返回 strings 列表，其中每个元素是一个压缩后的字符串。
 
@@ -850,6 +865,7 @@ class EntropyBottleneck(EntropyModel):
         medians = medians.expand(x.size(0), *([-1] * (spatial_dims + 1)))   #* ：将中位数张量扩展到与输入张量相同的批量大小和其他空间维度，维度为 (batch_size , channels, height, width)
         
         #* 至此， x, indexes, medians 这三个张量的维度都是: (batch_size , channels, height, width)
+        #传入父类中的函数将输入张量压缩为码流字符串
         return super().compress(x, indexes, medians)
 
     def decompress(self, strings, size):
@@ -1051,6 +1067,7 @@ class GaussianMixtureConditional(GaussianConditional):
 
     @torch.no_grad()
     def _build_cdf(self, scales, means, weights, abs_max):
+        #这个函数将概率分布转换为可以用于编码的CDF
         num_latents = scales.size(1)
         num_samples = abs_max * 2 + 1
         TINY = 1e-10

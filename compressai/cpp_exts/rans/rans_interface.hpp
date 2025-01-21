@@ -39,8 +39,11 @@
 namespace py = pybind11;
 
 struct RansSymbol {
-  uint16_t start;
-  uint16_t range;
+  uint16_t start;//对应在CDF区间的起始点，即概率比他小的符号的累积概率。
+                 //非旁路时对应cdfs[cdf_idx][value]，value应是符号的实际值
+  uint16_t range;//符号在CDF中的区间宽度,也就是符号的概率
+                 //如果不进人bypass，应该用cdfs[cdf_idx][value + 1] - start计算
+                 //在bypas时为定值start+1
   bool bypass; // bypass flag to write raw bits to the stream
 };
 
