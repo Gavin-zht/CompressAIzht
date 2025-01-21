@@ -130,6 +130,7 @@ inline uint32_t Rans64DecGetBits(Rans64State *r, uint32_t **pptr,
 * RANS是一种用于无损数据压缩的熵编码算法，它结合了算术编码的效率和Huffman编码的简单性。
 
 * 参数: symbols：要编码的符号序列, indexes：每个符号对应的CDF（累积分布函数）索引, cdfs：所有符号的CDF列表, cdfs_sizes：每个CDF的大小, offsets：每个CDF的偏移量。
+* 参数： 这些参数都是一个list, 用于批量处理
 
 * 总体逻辑: 这个函数 BufferedRansEncoder::encode_with_indexes 实现了将符号序列编码为RANS编码数据的过程。它通过反向遍历符号序列，使用每个符号的CDF进行编码，并处理超出CDF范围的值。
 * 编码结果存储在 _syms 缓冲区中，最终可以被进一步处理并输出为紧凑的比特流。
@@ -147,7 +148,7 @@ void BufferedRansEncoder::encode_with_indexes(
   // backward loop on symbols from the end;
   for (size_t i = 0; i < symbols.size(); ++i) { 
     //* 从符号序列的末尾开始遍历，这是因为RANS编码是反向进行的，即先编码最后一个符号，再编码倒数第二个符号，依此类推。
-    //* 假设当前遍历到了 第i个符号
+    //* 假设当前遍历到了 第i个符号 symbols[i] 表示 第i个符号
     const int32_t cdf_idx = indexes[i]; //* 对于第i个符号，获取其对应的CDF索引 cdf_idx。
     assert(cdf_idx >= 0);
     assert(cdf_idx < cdfs.size());
@@ -159,8 +160,8 @@ void BufferedRansEncoder::encode_with_indexes(
     assert((max_value + 1) < cdf.size());
 
     int32_t value = symbols[i] - offsets[cdf_idx];  //* 计算符号的实际值 value，value = symbols[i] - offsets[cdf_idx]
-    //符号值symbols可能在CDF的下标之外，有可能找不到对应的CDF，因此要通过offset确保符号值能够正确地映射到CDF中的某个概率区间，所以value是实际对应到单个CDF中的下标
-    //cdfs[cdf_idx][value]是要取出的CDF区间的起始点
+    //* 符号值symbols可能在CDF的下标之外，有可能找不到对应的CDF，因此要通过offset确保符号值能够正确地映射到CDF中的某个概率区间，所以value是实际对应到单个CDF中的下标
+    //* cdfs[cdf_idx][value]是要取出的CDF区间的起始点
     uint32_t raw_val = 0;
     //符号值过大或为负时，使用一下if——else会控制进入旁路编码模式
     if (value < 0) {
