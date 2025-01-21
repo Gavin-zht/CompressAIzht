@@ -154,13 +154,15 @@ void BufferedRansEncoder::encode_with_indexes(
 
     const auto &cdf = cdfs[cdf_idx];  //* 获取第i个符号对应的CDF cdf 
     const int32_t max_value = cdfs_sizes[cdf_idx] - 2;  //* 获取第i个符号对应的最大值 max_value，max_value 是 cdfs_sizes[cdf_idx] - 2
-
+    
     assert(max_value >= 0);
     assert((max_value + 1) < cdf.size());
 
     int32_t value = symbols[i] - offsets[cdf_idx];  //* 计算符号的实际值 value，value = symbols[i] - offsets[cdf_idx]
-
+    //符号值symbols可能在CDF的下标之外，有可能找不到对应的CDF，因此要通过offset确保符号值能够正确地映射到CDF中的某个概率区间，所以value是实际对应到单个CDF中的下标
+    //cdfs[cdf_idx][value]是要取出的CDF区间的起始点
     uint32_t raw_val = 0;
+    //符号值过大或为负时，使用一下if——else会控制进入旁路编码模式
     if (value < 0) {
       raw_val = -2 * value - 1;
       value = max_value;
@@ -171,10 +173,14 @@ void BufferedRansEncoder::encode_with_indexes(
 
     assert(value >= 0);
     assert(value < cdfs_sizes[cdf_idx] - 1);
+    //断言确保value在cdf下标范围内
 
     _syms.push_back({static_cast<uint16_t>(cdf[value]),
                      static_cast<uint16_t>(cdf[value + 1] - cdf[value]),
                      false});
+    //CDF是累积分布函数数组，其中每个元素表示到当前符号为止的累积概率，注意是累加的值，因此cdf[value + 1] - cdf[value]的差值才是我们需要的概率范围range
+    //也就是说每个符号的概率要通过相邻两个CDF值之间的差来计算，实际上就代表了当前符号的概率
+
 
     /* 
     Bypass coding mode (value == max_value -> sentinel flag) 
@@ -190,6 +196,7 @@ void BufferedRansEncoder::encode_with_indexes(
       while ((raw_val >> (n_bypass * bypass_precision)) != 0) {
         ++n_bypass;
       }
+      //一直右移 raw_val，用其位数确定旁路的执行次数
 
       /* Encode number of bypasses */
       int32_t val = n_bypass;
@@ -203,7 +210,7 @@ void BufferedRansEncoder::encode_with_indexes(
       /* Encode raw value */
       for (int32_t j = 0; j < n_bypass; ++j) {
         const int32_t val =
-            (raw_val >> (j * bypass_precision)) & max_bypass_val;
+            (raw_val >> (j * bypass_precision)) & max_bypass_val;//raw_val 右移 j * bypass_precision 位后取出作为起始点
         _syms.push_back(
             {static_cast<uint16_t>(val), static_cast<uint16_t>(val + 1), true});
       }
@@ -440,6 +447,7 @@ RansDecoder::decode_stream(const std::vector<int32_t> &indexes,
 // }
 
 PYBIND11_MODULE(ans, m) {
+  //这个部分将C++代码做成一个库绑定到Python
   m.attr("__name__") = "compressai.ans";
 
   m.doc() = "range Asymmetric Numeral System python bindings";

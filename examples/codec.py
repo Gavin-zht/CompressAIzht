@@ -306,7 +306,9 @@ def encode_image(input, codec: CodecInfo, output):
     with torch.no_grad(): #* 使用 torch.no_grad() 上下文管理器，确保在压缩过程中不计算梯度，以提高性能。
         out = codec.net.compress(x)
         #* 调用 codec.net.compress(x)，使用编解码器中的神经网络模型对填充后的图像 x 进行压缩，得到压缩后的数据 out。
-
+        #out是一个字典，包含两部分，
+        #一部分是压缩后的数据字符串(已经被熵编码)
+        #另一部分是shape，代表换后图像张量的高度和宽度
     shape = out["shape"]
 
     with Path(output).open("wb") as f: #* 使用 Path(output).open("wb") 打开输出文件，准备写入压缩数据。
