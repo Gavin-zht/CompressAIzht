@@ -131,10 +131,14 @@ inline uint32_t Rans64DecGetBits(Rans64State *r, uint32_t **pptr,
 
 * 参数: symbols：要编码的符号序列, indexes：每个符号对应的CDF（累积分布函数）索引, cdfs：所有符号的CDF列表, cdfs_sizes：每个CDF的大小, offsets：每个CDF的偏移量。
 * 参数： 这些参数都是一个list, 用于批量处理
+* 参数细节: symbols一维(32bit)数组,其中symbols[i]表示第i个待编码符号
+* 参数细节: indexes一维索引数组,其中indexes[i]为symbol[i]对应的cdfs的下标索引，即symbol[i]对应的cdf为cdfs[indexes[i]]
+* 参数细节: pmf[i]表示的含义为，在i的条件下，某个事件发生的概率。从而，对于pmf[i][j]则为在i的条件下，事件j  发生的概率。
+* 参数细节: cdf[i]为在i的条件下，某个事件发生的累积概率，从而对于cdf[i][j]表示第 i 个条件下，前 j 个事件的累积概率，两个相邻元素之差cdf[i][j+1]−cdf[i][j] 对应pmf[i][j] 的概率值。
 
 * 总体逻辑: 这个函数 BufferedRansEncoder::encode_with_indexes 实现了将符号序列编码为RANS编码数据的过程。它通过反向遍历符号序列，使用每个符号的CDF进行编码，并处理超出CDF范围的值。
 * 编码结果存储在 _syms 缓冲区中，最终可以被进一步处理并输出为紧凑的比特流。
-
+* std::vector<RansSymbol> _syms 是BufferedRansEncoder类的一个私有成员函数
 */
 void BufferedRansEncoder::encode_with_indexes(
     const std::vector<int32_t> &symbols, const std::vector<int32_t> &indexes,
@@ -153,8 +157,8 @@ void BufferedRansEncoder::encode_with_indexes(
     assert(cdf_idx >= 0);
     assert(cdf_idx < cdfs.size());
 
-    const auto &cdf = cdfs[cdf_idx];  //* 获取第i个符号对应的CDF cdf 
-    const int32_t max_value = cdfs_sizes[cdf_idx] - 2;  //* 获取第i个符号对应的最大值 max_value，max_value 是 cdfs_sizes[cdf_idx] - 2
+    const auto &cdf = cdfs[cdf_idx];  //* 获取第i个符号对应的CDF: cdf , 这是一个一维数组，cdf[j] 表示 前j个事件的累计概率
+    const int32_t max_value = cdfs_sizes[cdf_idx] - 2;  //* 获取第i个符号对应的CDF下标的最大值 max_value，max_value 是 cdfs_sizes[cdf_idx] - 2
     
     assert(max_value >= 0);
     assert((max_value + 1) < cdf.size());
@@ -163,7 +167,7 @@ void BufferedRansEncoder::encode_with_indexes(
     //* 符号值symbols可能在CDF的下标之外，有可能找不到对应的CDF，因此要通过offset确保符号值能够正确地映射到CDF中的某个概率区间，所以value是实际对应到单个CDF中的下标
     //* cdfs[cdf_idx][value]是要取出的CDF区间的起始点
     uint32_t raw_val = 0;
-    //符号值过大或为负时，使用一下if——else会控制进入旁路编码模式
+    //符号值过大或为负时，使用以下的if—else结构会控制进入旁路编码模式
     if (value < 0) {
       raw_val = -2 * value - 1;
       value = max_value;
@@ -179,8 +183,9 @@ void BufferedRansEncoder::encode_with_indexes(
     _syms.push_back({static_cast<uint16_t>(cdf[value]),
                      static_cast<uint16_t>(cdf[value + 1] - cdf[value]),
                      false});
-    //CDF是累积分布函数数组，其中每个元素表示到当前符号为止的累积概率，注意是累加的值，因此cdf[value + 1] - cdf[value]的差值才是我们需要的概率范围range
-    //也就是说每个符号的概率要通过相邻两个CDF值之间的差来计算，实际上就代表了当前符号的概率
+    //* CDF是累积分布函数数组，其中每个元素表示到当前符号为止的累积概率，注意是累加的值，因此cdf[value + 1] - cdf[value]的差值才是我们需要的概率范围range
+    //* 也就是说每个符号的概率要通过相邻两个CDF值之间的差来计算，实际上就代表了当前符号的概率
+    //* 将(cdf[value] , cdf[value+1] - cdf[value], false) 作为 结构体RansSymbol(start, range , bypass) 压入 _syms数组
 
 
     /* 
@@ -228,32 +233,53 @@ void BufferedRansEncoder::encode_with_indexes(
 //                              make_cdfs_vector_from_tensor(cdfs, cdfs_sizes),
 //                              cdfs_sizes, offsets);
 // }
+/*
+*功能概述:
+* flush 函数是 BufferedRansEncoder 类的一个方法，用于将缓冲区中的符号序列编码为 RANS（Range ANS）编码数据，并输出为紧凑的比特流。RANS 是一种用于无损数据压缩的熵编码算法，结合了算术编码的效率和 Huffman 编码的简单性。
 
+*参数分析
+* flush 函数没有显式参数，但它依赖于类的成员变量 _syms，这是一个存储符号信息的缓冲区。_syms 是一个 std::vector<RansSymbol> 类型的变量，其中 RansSymbol 是一个结构体，包含符号的起始值、范围和是否旁路编码的标志。
+*返回值: flush 函数返回一个 py::bytes 类型的对象，表示编码后的紧凑比特流。这个比特流可以被进一步处理或存储。
+*整体执行逻辑
+*初始化 RANS 编码器状态。
+*从 _syms 缓冲区中逐个取出符号信息，进行编码。
+*将编码后的数据存储到输出缓冲区中。
+*清空 _syms 缓冲区。
+*返回编码后的比特流。
+
+
+*/
 py::bytes BufferedRansEncoder::flush() {
-  Rans64State rans;
-  Rans64EncInit(&rans);
 
-  std::vector<uint32_t> output(_syms.size(), 0xCC); // too much space ?
-  uint32_t *ptr = output.data() + output.size();
+  Rans64State rans; //* 创建一个 Rans64State(本质上就是uint64_t=unsigned long long) 类型的变量 rans，用于存储 RANS 编码器的状态
+  Rans64EncInit(&rans); //* rans 的初值被设定为 (1ull << 31)
+
+  std::vector<uint32_t> output(_syms.size(), 0xCC); //* 创建一个大小为 _syms.size() 的 std::vector<uint32_t> 类型的变量 output，用于存储编码后的数据。初始化 output 的所有元素为 0xCC。
+  uint32_t *ptr = output.data() + output.size();  //* 获取 output 的数据指针 ptr，并将其指向 output 的末尾
   assert(ptr != nullptr);
 
   while (!_syms.empty()) {
-    const RansSymbol sym = _syms.back();
+    //* 使用 while 循环逐个处理 _syms 缓冲区中的符号信息。
+    const RansSymbol sym = _syms.back(); //* 每次从 _syms 的末尾取出一个符号信息 sym = (start, range , bypass)
 
-    if (!sym.bypass) {
+    if (!sym.bypass) { //* 如果 sym.bypass 为 false，调用 Rans64EncPut 函数将符号信息编码到 RANS 编码器中
       Rans64EncPut(&rans, &ptr, sym.start, sym.range, precision);
-    } else {
+    } else {  //* 如果 sym.bypass 为 true，调用 Rans64EncPutBits 函数将符号信息以旁路编码模式编码到 RANS 编码器中。
       // unlikely...
       Rans64EncPutBits(&rans, &ptr, sym.start, bypass_precision);
     }
-    _syms.pop_back();
+    _syms.pop_back(); //* 使用 _syms.pop_back() 将处理过的符号信息从 _syms 缓冲区中移除
   }
 
-  Rans64EncFlush(&rans, &ptr);
+  Rans64EncFlush(&rans, &ptr);  //* 调用 Rans64EncFlush 函数完成 RANS 编码器的编码过程，并将剩余的数据编码到输出缓冲区(ptr指向的解码缓冲区)中
 
   const int nbytes =
-      std::distance(ptr, output.data() + output.size()) * sizeof(uint32_t);
+      std::distance(ptr, output.data() + output.size()) * sizeof(uint32_t); //* 使用 std::distance 函数计算从 ptr 到 output.data() + output.size() 的距离，即编码后的数据大小。
+      //* 将距离乘以 sizeof(uint32_t)，得到编码后的数据大小（以字节为单位）
+      //* nbytes 就表示：“编码后数据的字节大小”
   return std::string(reinterpret_cast<char *>(ptr), nbytes);
+  //* 使用 reinterpret_cast<char *>(ptr) 将 ptr 转换为 char 类型的指针。创建一个 std::string 对象，将编码后的数据存储为字符串形式。
+  //* 返回编码后的比特流
 }
 
 py::bytes
