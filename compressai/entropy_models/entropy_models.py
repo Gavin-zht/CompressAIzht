@@ -167,21 +167,59 @@ class EntropyModel(nn.Module):
         entropy_coder: Optional[str] = None,
         entropy_coder_precision: int = 16,
     ):
+        """_summary_
+        1. 功能概述
+        __init__ 方法是 EntropyModel 类的初始化方法，用于设置熵模型的基本属性和参数。
+        它初始化熵编码器、似然下界，并注册一些缓冲区，这些缓冲区将在后续的 update 方法中被填充。
+        
+        2. 参数分析
+        likelihood_bound: float：似然下界，用于防止似然值过小。默认值为 1e-9。
+        entropy_coder: Optional[str]：熵编码器的名称。如果为 None，则使用默认的熵编码器。默认值为 None。
+        entropy_coder_precision: int：熵编码器的精度，通常是一个整数。默认值为 16。
+        
+        3. 返回值分析
+        __init__ 方法没有返回值，但它初始化了以下属性：
+        self.entropy_coder：熵编码器实例。
+        self.entropy_coder_precision：熵编码器的精度。
+        self.use_likelihood_bound：是否使用似然下界。
+        self.likelihood_lower_bound：似然下界实例（如果 likelihood_bound > 0）。
+        self._offset：偏移量缓冲区。
+        self._quantized_cdf：量化 CDF 缓冲区。
+        self._cdf_length：CDF 长度缓冲区。
+        
+        4. 整体执行逻辑
+        __init__ 方法的主要逻辑包括：
+        熵编码器初始化：如果未指定熵编码器，则使用默认的熵编码器。
+        熵编码器精度设置：将传入的精度值转换为整数并存储。
+        似然下界设置：如果 likelihood_bound 大于 0，则初始化似然下界。
+        缓冲区注册：注册 _offset、_quantized_cdf 和 _cdf_length 缓冲区，这些缓冲区将在后续的 update 方法中被填充。
+        """
         super().__init__()
 
         if entropy_coder is None:
-            entropy_coder = default_entropy_coder()
+            entropy_coder = default_entropy_coder() #* 熵编码器使用默认的ANS(非对称数字系统)编码器
         self.entropy_coder = _EntropyCoder(entropy_coder)
-        self.entropy_coder_precision = int(entropy_coder_precision)
+        self.entropy_coder_precision = int(entropy_coder_precision) #* 设定熵编码器的精度
 
         self.use_likelihood_bound = likelihood_bound > 0
+        # 检查 likelihood_bound 是否大于 0。如果大于 0，则设置 self.use_likelihood_bound 为 True，并初始化 LowerBound 实例。
+        # 如果 likelihood_bound 小于或等于 0，则不使用似然下界。        
         if self.use_likelihood_bound:
-            self.likelihood_lower_bound = LowerBound(likelihood_bound)
+            self.likelihood_lower_bound = LowerBound(likelihood_bound)  #* 设定self.likelihood_lower_bound 表示 似然的下界
 
         # to be filled on update()
         self.register_buffer("_offset", torch.IntTensor())
-        self.register_buffer("_quantized_cdf", torch.IntTensor())
-        self.register_buffer("_cdf_length", torch.IntTensor())
+        self.register_buffer("_quantized_cdf", torch.IntTensor())   #* 量化后CDF(累积分布函数)
+        self.register_buffer("_cdf_length", torch.IntTensor())      #* cdf的长度/单位数
+        # 使用 register_buffer 方法注册 _offset、_quantized_cdf 和 _cdf_length 缓冲区。这些缓冲区将在后续的 update 方法中被填充。
+        # 这些缓冲区的初始值为空的 torch.IntTensor。
+
+        #*self.register_buffer 是 PyTorch 中的一个方法，用于在模块中注册一个缓冲区（buffer）。缓冲区通常用于存储不参与梯度计算的张量，例如模型的统计信息、固定参数或其他需要在训练过程中保持不变的数据。     
+        # register_buffer(name: str, tensor: Optional[Tensor], persistent: bool = True)
+        # name: str：缓冲区的名称，必须是一个字符串。
+        # tensor: Optional[Tensor]：要注册的张量。如果为 None，则不会注册任何缓冲区。
+        # persistent: bool = True：是否将缓冲区保存到模块的状态字典中。默认值为 True，表示缓冲区会保存到状态字典中，可以在模型保存和加载时使用。   
+        
 
     def __getstate__(self):
         attributes = self.__dict__.copy()
@@ -194,10 +232,16 @@ class EntropyModel(nn.Module):
 
     @property
     def offset(self):
+        """_summary_
+        返回熵模型的self.offset
+        """
         return self._offset
 
     @property
     def quantized_cdf(self):
+        """_summary_
+        返回熵模型的self._quantized_cdf
+        """        
         return self._quantized_cdf
 
     @property
@@ -222,8 +266,8 @@ class EntropyModel(nn.Module):
     检查 mode 是否有效，如果无效则抛出 ValueError。
     根据 mode 的值，分别进行以下操作：
     - "noise"：在输入张量上添加均匀分布的噪声，然后返回结果。
-    - "dequantize"：如果 means 不为 None，则将输入张量与 means 相加，否则将输入张量转换为指定类型，返回结果。
-    - "symbols"：将输入张量减去 means（如果 means 不为 None），然后进行四舍五入，转换为整数类型，返回结果。
+    - "dequantize"：此时直接返回torch.round(inputs - means) + means, 也就约等于对inputs四舍五入
+    - "symbols"：将输入张量减去 means（如果 means 不为 None），然后进行四舍五入，转换为整数类型，返回结果。i.e. 此时直接返回torch.round(inputs - means)
         """
         if mode not in ("noise", "dequantize", "symbols"):
             raise ValueError(f'Invalid quantization mode: "{mode}"')
@@ -233,17 +277,17 @@ class EntropyModel(nn.Module):
             noise = torch.empty_like(inputs).uniform_(-half, half)  #* 定义一个噪声张量 noise, 其大小与inputs相同，noise的每一个元素都是从均匀分布[-0.5, 0.5]上随机采样得到的。
             inputs = inputs + noise #* 在inputs上加上噪声，作为量化值的近似替代。
             return inputs
-
+        #* 至此，表明mode参数不为"noise"
         outputs = inputs.clone()
         if means is not None:
-            outputs -= means
+            outputs -= means    #* 如果传入了均值参数，就先减去均值
 
-        outputs = torch.round(outputs)
+        outputs = torch.round(outputs)  #* torch.round 是 PyTorch 中的一个函数，用于对输入张量的每个元素进行四舍五入操作。它将每个元素四舍五入到最接近的整数。
 
         if mode == "dequantize":
             if means is not None:
                 outputs += means
-            return outputs
+            return outputs  
 
         assert mode == "symbols", mode
         outputs = outputs.int()
@@ -275,7 +319,11 @@ class EntropyModel(nn.Module):
         dtype：反量化输出的类型，类型为 torch.dtype，默认为 torch.float。
         
         实现：
-        如果 means 不为 None，则将输入张量转换为与 means 相同的类型，并与 means 相加，否则将输入张量转换为指定的 dtype，返回结果。
+        如果 means 不为 None，则将输入张量转换为与 means 相同的类型，并与 means 相加；
+        否则将输入张量转换为指定的 dtype，返回结果。
+        
+        返回值：
+        inputs的反量化值(inputs + means)
         
         """
         if means is not None:
@@ -367,7 +415,7 @@ class EntropyModel(nn.Module):
 
         返回值：压缩后的字符串(码流)列表。
         
-        实现
+        实现过程
         使用 quantize 方法将输入张量 inputs 量化为符号张量 symbols。
         检查 inputs 的维度是否至少为2，如果不是则抛出 ValueError。
         检查 inputs 和 indexes 的大小是否相同，如果不同则抛出 ValueError。
