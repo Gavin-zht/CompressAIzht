@@ -664,14 +664,17 @@ class EntropyBottleneck(EntropyModel):
         max_length = pmf_length.max().item()    #* 计算最大长度(pmf_length中的最大长度)，用于生成样本
         device = pmf_start.device
         samples = torch.arange(max_length, device=device)   #* 生成样本samples，维度为 (max_length,), samples[i] = i
-        samples = samples[None, :] + pmf_start[:, None, None]   #* 调整样本的维度，维度为 (channels, max_length)
-        #* None 表示添加一个维度
+        samples = samples[None, :] + pmf_start[:, None, None]   #* 调整样本的维度，维度为 (channels, 1,max_length)
+        #* None 表示添加一个维度, samples[None, :] 维度为(1,max_length), pmf_start[:, None, None]维度为: (channels, 1,1)
+        #* 由于Python的广播机制，samples变为(channels, 1,max_length), samples[i][1][j] = j
+        #* pmf_start变为(channels, 1,max_length), pmf[i][1][j] = 通道i的起点值
         #* 每个通道的 pmf_start 值被加到了 samples 的每个元素上，生成了一个新的张量，其中每个通道的值都偏移了相应的 pmf_start 值
-        #* samples[i] 表示 第i个通道的样本， samples[i][j] = pmf_start[i] + samples[j] =  pmf_start[i] + j
+        #* samples[i] 表示 第i个通道的样本， samples[i][1][j] = 原本的pmf_start[i](通道i的起点值) + 原本的samples[j] =  pmf_start[i] + j， 表示第i个通道的PMF的第j个位置的取值
         #* 
 
         pmf, lower, upper = self._likelihood(samples, stop_gradient=True)   #TODO
-        pmf = pmf[:, 0, :]
+        #* pmf, lower, upper 的维度均为(channels, 1,max_length)
+        pmf = pmf[:, 0, :]  #* 去掉第二维，pmf维度为(channels,max_length), pmf[i][j] 表示在第i个通道的第j个位置的概率密度函数(pmf)
         tail_mass = torch.sigmoid(lower[:, 0, :1]) + torch.sigmoid(-upper[:, 0, -1:])
 
         quantized_cdf = self._pmf_to_cdf(pmf, tail_mass, pmf_length, max_length)
@@ -728,16 +731,16 @@ class EntropyBottleneck(EntropyModel):
         功能
         _likelihood 方法用于计算输入张量的似然。这个方法通过计算输入值在给定概率分布中的累积概率分布CDF（logits）来确定每个输入值的似然。
         具体来说，它计算每个输入值在量化区间内的概率，这些概率用于后续的熵编码和解码过程。
-
+        likelihood = CDF(input+0.5) - CDF(input-0.5), 表示 input的概率(pmf)
         参数
-        inputs: Tensor：输入张量，维度为 (batch_size, channels, *)，其中 * 表示任意长度的额外维度。
+        inputs: Tensor：输入张量，维度为 ( channels, 1,  *)，其中 * 表示任意长度的额外维度。
         stop_gradient: bool = False：是否停止梯度传播。如果为 True，则在计算过程中不会计算梯度，这在某些优化步骤中很有用。
         
         返回值
         返回值：一个包含三个张量的元组 (likelihood, lower, upper)：
-        likelihood：输入值的似然张量，维度与输入张量相同。
-        lower：输入值的累积对数下界，维度与输入张量相同。
-        upper：输入值的累积对数上界，维度与输入张量相同。
+        likelihood：输入值的似然张量，维度与输入张量相同,维度为 ( channels, 1,  *), likelihood = CDF(input+0.5) - CDF(input-0.5), 表示 input的概率(pmf)
+        lower：输入值的累积对数下界，维度与输入张量相同,维度为 ( channels, 1,  *)
+        upper：输入值的累积对数上界，维度与输入张量相同,维度为 ( channels, 1,  *)
 
         """
         half = float(0.5)
