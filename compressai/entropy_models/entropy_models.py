@@ -409,9 +409,9 @@ class EntropyModel(nn.Module):
         功能：将输入张量压缩为码流字符串。
         
         参数：
-        inputs：输入张量，类型为 torch.Tensor。
-        indexes：CDF索引张量，类型为 torch.IntTensor。
-        means：可选参数，均值张量，类型为 Optional[torch.Tensor]。
+        inputs：输入张量，类型为 torch.Tensor, 维度为(batch_size , channels, height, width)
+        indexes：CDF索引张量，类型为 torch.IntTensor, 维度为(batch_size , channels, height, width)
+        means：可选参数，均值张量，类型为 Optional[torch.Tensor]，维度为(batch_size , channels, height, width)
 
         返回值：压缩后的字符串(码流)列表。
         
@@ -423,10 +423,6 @@ class EntropyModel(nn.Module):
         遍历 symbols 的每个批次，使用 entropy_coder 的 encode_with_indexes 方法对符号进行编码，将编码结果存储在 strings 列表中。
         返回 strings 列表，其中每个元素是一个压缩后的字符串。        
 
-        Args:
-            inputs (torch.Tensor): input tensors
-            indexes (torch.IntTensor): tensors CDF indexes
-            means (torch.Tensor, optional): optional tensor means
         """
         symbols = self.quantize(inputs, "symbols", means)   #* 使用 quantize 方法将输入张量 inputs 量化为符号张量 symbols。量化模式为 "symbols"，如果 means 不为 None，则在量化前减去 means。
 
@@ -446,6 +442,7 @@ class EntropyModel(nn.Module):
         strings = []
         for i in range(symbols.size(0)):
             #* 遍历 symbols 的每个批次，使用 entropy_coder 的 encode_with_indexes 方法对符号进行编码。编码时传入符号、索引、量化 CDF、CDF 长度和偏移量。
+
             rv = self.entropy_coder.encode_with_indexes(
                 symbols[i].reshape(-1).int().tolist(),
                 indexes[i].reshape(-1).int().tolist(),
@@ -529,6 +526,7 @@ class EntropyModel(nn.Module):
 class EntropyBottleneck(EntropyModel):
     r"""
     EntropyBottleneck(熵瓶颈层) 类是 EntropyModel 的一个子类，实现了熵瓶颈层，用于图像压缩中的熵编码。
+    EntropyBottleneck 就是“基于完全因子化的熵模型”
     这个类基于 J. Ballé 等人在论文 "Variational image compression with a scale hyperprior" 中提出的方法。    
     
     
@@ -587,7 +585,7 @@ class EntropyBottleneck(EntropyModel):
         self.factors = nn.ParameterList()   #* 创建因子参数列表。
 
         for i in range(len(self.filters) + 1):  #* 遍历每个滤波器。
-            init = np.log(np.expm1(1 / scale / filters[i + 1]))
+            init = np.log(np.expm1(1 / scale / filters[i + 1])) #* init 是一个初始值
             matrix = torch.Tensor(channels, filters[i + 1], filters[i]) #* 创建权重张量matrix，维度为 (channels, filters[i + 1], filters[i])。
             matrix.data.fill_(init)     #* 将matrix矩阵填充满初始化值init
             self.matrices.append(nn.Parameter(matrix))  #* 将权重张量matrix添加到参数列表self.matrices中。
@@ -646,27 +644,31 @@ class EntropyBottleneck(EntropyModel):
 
         if update_quantiles:    #* 如果 update_quantiles 为 True，则调用 _update_quantiles 方法更新分位数。
             self._update_quantiles()
-
+        #* self.quantiles维度为(channels,1,3) self.quantiles[i]=[[最小分位值(下界)，中位数，最大分位值(上界)]] 维度为(1,3)
         medians = self.quantiles[:, 0, 1]   #* medians = self.quantiles[:, 0, 1]：提取每个通道的中位数，维度为 (channels,)。
 
-        minima = medians - self.quantiles[:, 0, 0]  #* 计算每个通道的最小值，维度为 (channels,)
+        minima = medians - self.quantiles[:, 0, 0]  #* 计算每个通道的中位值和最小分位值的距离，维度为 (channels,)
         minima = torch.ceil(minima).int()
-        minima = torch.clamp(minima, min=0)
+        minima = torch.clamp(minima, min=0) #* 限制minma 为非负值
 
-        maxima = self.quantiles[:, 0, 2] - medians  #* 计算每个通道的最大值，维度为 (channels,)。
+        maxima = self.quantiles[:, 0, 2] - medians  #* 计算每个通道的中位值和最大分位值的距离，维度为 (channels,)。
         maxima = torch.ceil(maxima).int()
-        maxima = torch.clamp(maxima, min=0)
+        maxima = torch.clamp(maxima, min=0) #* 限制maxima 为非负值
         #* minima 和 maxima 都被向上取整并限制为非负值。
 
         self._offset = -minima  #* 计算偏移量，维度为 (channels,)。
 
-        pmf_start = medians - minima    #* 计算 PMF 的起始点，维度为 (channels,)
-        pmf_length = maxima + minima + 1    #* 计算 PMF 的长度，维度为 (channels,)。
+        pmf_start = medians - minima    #* 计算 PMF 的起始点，维度为 (channels,)，pmf[i] 为当前通道i的起始点，取值为 中位数 - (中位值和最小分位值的距离)
+        pmf_length = maxima + minima + 1    #* 计算 PMF 的长度，维度为 (channels,)，pmf_length[i] 表示 当前通道i的pmf的长度
 
         max_length = pmf_length.max().item()    #* 计算最大长度(pmf_length中的最大长度)，用于生成样本
         device = pmf_start.device
-        samples = torch.arange(max_length, device=device)   #* 生成样本samples，维度为 (max_length,)
+        samples = torch.arange(max_length, device=device)   #* 生成样本samples，维度为 (max_length,), samples[i] = i
         samples = samples[None, :] + pmf_start[:, None, None]   #* 调整样本的维度，维度为 (channels, max_length)
+        #* None 表示添加一个维度
+        #* 每个通道的 pmf_start 值被加到了 samples 的每个元素上，生成了一个新的张量，其中每个通道的值都偏移了相应的 pmf_start 值
+        #* samples[i] 表示 第i个通道的样本， samples[i][j] = pmf_start[i] + samples[j] =  pmf_start[i] + j
+        #* 
 
         pmf, lower, upper = self._likelihood(samples, stop_gradient=True)   #TODO
         pmf = pmf[:, 0, :]
@@ -833,24 +835,36 @@ class EntropyBottleneck(EntropyModel):
         size：输入张量的维度大小，类型为 tuple，表示张量的维度，例如 (batch_size, channels, height, width)。
         
         返回值
-        返回值：索引张量，维度为 (batch_size, channels, height, width)，其中每个元素是通道索引。
+        返回值：索引张量indexes，维度为 (batch_size, channels, height, width)，其中每个元素是通道索引。
+        #! indexes[i][j][m][n]的取值为 j,(对于任意i,m,n)
         
         整体执行逻辑
         确定输入张量的维度：获取输入张量的维度数 dims，批量大小 N 和通道数 C。
         创建索引张量：生成一个从 0 到 C-1 的索引序列，并调整其维度以匹配输入张量的通道维度。
         重复索引张量：将索引张量在批量大小和其他空间维度上重复，以生成最终的索引张量。
         """
-        dims = len(size)    #* 获取输入张量的维度数。
+        dims = len(size)    #* 获取输入张量的维度数; e.g. dims =4 ， 当x的维度为 (batch_size, channels, height, width)
         N = size[0]     #* 获取批量大小batch_size 
         C = size[1]     #* 获取通道数channel
 
-        view_dims = np.ones((dims,), dtype=np.int64)    #* 创建一个与输入张量维度数相同的数组，初始值全为 1
-        view_dims[1] = -1   #* 将第二个维度（通道维度）设置为 -1，表示该维度将被展平
-        indexes = torch.arange(C).view(*view_dims)  #* 生成从 0 到 C-1 的索引序列indexes，并调整其维度以匹配输入张量的通道维度，indexes 的维度为: (1, channels, 1, 1, ...)
+        view_dims = np.ones((dims,), dtype=np.int64)    #* 创建一个与输入张量维度数相同的数组，初始值全为 1， e.g. view_dims = [1,1,1,1]
+        view_dims[1] = -1   #* 将第二个维度（通道维度）设置为 -1，表示该维度将被展平, e.g. view_dims = [1,-1,1,1]
+        indexes = torch.arange(C).view(*view_dims)  #* 生成从 0 到 C-1 的索引序列indexes，并调整其维度以匹配输入张量的通道维度，indexes 的维度为: (1, channels, 1, 1)
         indexes = indexes.int()     #* 将indexes的内容设置为int类型
 
         return indexes.repeat(N, 1, *size[2:])  #* 将索引张量在批量大小和其他空间维度上重复，生成最终的索引张量, 其维度为 (batch_size, channels, height, width)
-
+        #! 其中indexes[i][j][m][n]的取值为 j,(对于任意i,m,n)
+        #* 在 PyTorch 中，repeat 函数用于重复张量的元素，以生成一个新的张量。这个函数非常有用，尤其是在需要扩展张量的维度或重复某些模式时。repeat 函数的语法如下：
+        # torch.Tensor.repeat(*sizes)
+        # 参数：*sizes：一个或多个整数，表示每个维度上重复的次数。
+        # 返回值：
+        # 返回一个新的张量，其维度根据 sizes 参数扩展。
+        #* 例子： x = torch.tensor([[1, 2], [3, 4]])， y = x.repeat(2, 3)
+        # y= tensor([[1, 2, 1, 2, 1, 2],
+        # [3, 4, 3, 4, 3, 4],
+        # [1, 2, 1, 2, 1, 2],
+        # [3, 4, 3, 4, 3, 4]])
+        
     @staticmethod
     def _extend_ndims(tensor, n):
         return tensor.reshape(-1, *([1] * n)) if n > 0 else tensor.reshape(-1)
@@ -906,7 +920,7 @@ class EntropyBottleneck(EntropyModel):
         扩展中位数张量：将中位数张量扩展到与输入张量相同的批量大小和其他空间维度。
         调用基类的 compress 方法：将输入张量、索引张量和中位数张量传递给基类的 compress 方法，进行实际的压缩操作。
         """
-        indexes = self._build_indexes(x.size()) #* 调用 _build_indexes 方法生成索引张量，维度为 (batch_size, channels, height, width)
+        indexes = self._build_indexes(x.size()) #* 调用 _build_indexes 方法生成索引张量indexes，维度为 (batch_size, channels, height, width)
         medians = self._get_medians().detach()  #* 调用 _get_medians 方法获取中位数张量，维度为 (channels, 1, 1)，例如 (128, 1, 1)
         spatial_dims = len(x.size()) - 2    #* 计算空间维度数，例如 2（高度和宽度）
         medians = self._extend_ndims(medians, spatial_dims) #* 调用 _extend_ndims 方法扩展中位数张量的维度，维度为 (channels, 1, 1, 1)
@@ -914,6 +928,10 @@ class EntropyBottleneck(EntropyModel):
         
         #* 至此， x, indexes, medians 这三个张量的维度都是: (batch_size , channels, height, width)
         #传入父类中的函数将输入张量压缩为码流字符串
+        #* symbols[i] 的维度为(channels, height, width), 
+        #! indexes[i]的维度为(channels, height, width), 并且indexes[j][m][n]的取值为j
+        #* index_list = indexes[i].reshape(-1).int().tolist()的结果为:一个长度为(channels x height x width)的列表，且index_list[j*(heightxwidth) : (j+1)*(heightxwidth)] 的取值为j
+        #* 这就表示: symbols[i][j] 中的那 height x width 个元素，都会使用第 j 个CDF(累计概率密度函数)， 也就是说：cdf[j] 是对应于图片第j个通道的累计概率密度函数
         return super().compress(x, indexes, medians)
 
     def decompress(self, strings, size):
