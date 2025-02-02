@@ -123,14 +123,18 @@ def default_entropy_coder():
 
 def pmf_to_quantized_cdf(pmf: Tensor, precision: int = 16) -> Tensor:
     """_summary_
-    功能：将概率密度函数（PMF）转换为累积概率密度函数（CDF）。
-    
-    参数：
-    pmf：概率密度函数，类型为 Tensor。
-    precision：精度，类型为 int，默认值为16。
+    *功能
+    * pmf_to_quantized_cdf 函数用于将概率质量函数（PMF）转换为累积分布函数（CDF）。这是熵编码中的一个关键步骤，用于将概率分布转换为适合熵编码的格式。
+
+    *参数
+    * pmf：概率质量函数，类型为 std::vector<float>，表示每个符号的概率， pmf向量中存放的最后一个数字为tail
+    * precision：精度，类型为 int，表示累积分布函数的精度。
+
+    *返回值
+    * 返回值是一个 std::vector<uint32_t>，表示量化后的累积分布函数（CDF）, cdf的维度为pmf的长度+1, 并且cdf[0]=0, cdf[cdf_length]=1<<precision
     
     实现：
-    调用 _pmf_to_quantized_cdf 函数，传入 pmf.tolist() 和 precision，得到量化CDF的列表表示。
+    调用 pmf_to_quantized_cdf 函数，传入 pmf.tolist() 和 precision，得到量化CDF的列表表示。
     将列表表示转换为 torch.IntTensor 类型，返回量化CDF。
     """
     cdf = _pmf_to_quantized_cdf(pmf.tolist(), precision)
@@ -213,6 +217,8 @@ class EntropyModel(nn.Module):
         self.register_buffer("_cdf_length", torch.IntTensor())      #* cdf的长度/单位数
         # 使用 register_buffer 方法注册 _offset、_quantized_cdf 和 _cdf_length 缓冲区。这些缓冲区将在后续的 update 方法中被填充。
         # 这些缓冲区的初始值为空的 torch.IntTensor。
+        #! self._quantized_cdf 表示  “量化隐变量hat_y”的累计概率密度函数CDF：
+        #! 其中self._quantized_cdf[i] 是一个整数值，表示前i个事件的累计概率密度*(1<<precision), self._quantized_cdf[-1] 为(1<<precision)
 
         #*self.register_buffer 是 PyTorch 中的一个方法，用于在模块中注册一个缓冲区（buffer）。缓冲区通常用于存储不参与梯度计算的张量，例如模型的统计信息、固定参数或其他需要在训练过程中保持不变的数据。     
         # register_buffer(name: str, tensor: Optional[Tensor], persistent: bool = True)
@@ -352,33 +358,33 @@ class EntropyModel(nn.Module):
         功能：将概率密度函数（PMF）转换为累积分布函数（CDF）。
         
         参数：
-        pmf：概率质量函数。
-        tail_mass：尾部质量。
-        pmf_length：PMF的长度。
-        max_length：最大长度。
+        pmf：概率密度函数， 维度为 (channels, max_length)
+        tail_mass：尾部质量， 维度为 (channels,)
+        pmf_length：PMF的长度, 为一个标量
+        max_length：最大长度，为一个标量
         
         实现：
         创建一个大小为 (len(pmf_length), max_length + 2) 的零张量 cdf。
         遍历 pmf 中的每个概率分布，将其与尾部质量拼接，然后调用 pmf_to_quantized_cdf 函数进行转换，将结果存储在 cdf 中。
         返回 cdf。
 
-
-        Args:
-            pmf (_type_): _description_
-            tail_mass (_type_): _description_
-            pmf_length (_type_): _description_
-            max_length (_type_): _description_
-
-        Returns:
-            _type_: _description_
+        返回值
+        返回值是一个二维张量 cdf，维度为 (channels, max_length + 2)，cdf[i]表示第i个通道的累积分布函数。
         """
+        
         cdf = torch.zeros(
             (len(pmf_length), max_length + 2), dtype=torch.int32, device=pmf.device
-        )
+        )   #* len(pmf_length)：通道数。 max_length + 2：最大长度加2，用于存储累积分布函数。
+        #* cdf的维度为: (channels, max_length+2)
         for i, p in enumerate(pmf):
-            prob = torch.cat((p[: pmf_length[i]], tail_mass[i]), dim=0)
-            _cdf = pmf_to_quantized_cdf(prob, self.entropy_coder_precision)
-            cdf[i, : _cdf.size(0)] = _cdf
+            #* i 表示 通道, p = pmf[i] ，表示 第i个通道的PMF
+            #* p[: pmf_length[i]]：提取第 i 个通道的 PMF，长度为 pmf_length[i]。
+            #* 因为实际上第i个通道的pmf的长度为pmf_length[i]，而我们传送进来的pmf向量维度为(channels, max_length) 是将每一个通道的pmf都做了“扩增”，而后面那(max_length-pmf_length)的内容是无效填充物
+            prob = torch.cat((p[: pmf_length[i]], tail_mass[i]), dim=0) #* torch.cat((p[: pmf_length[i]], tail_mass[i]), dim=0)：将 PMF 和尾部质量拼接在一起。
+            #* prob的维度为(pmf_length[i]+1,), 是一个向量， self.entropy_coder_precision 是一个标量
+            _cdf = pmf_to_quantized_cdf(prob, self.entropy_coder_precision) #* 调用 pmf_to_quantized_cdf 函数将 PMF 转换为量化 CDF。
+            #* _cdf 为一个一维向量，长度为pmf_length[i]+2, 表示累积分布函数
+            cdf[i, : _cdf.size(0)] = _cdf   #* 将_cdf添加到cdf[i]中，表示第i个通道的累积分布函数
         return cdf
 
     def _check_cdf_size(self):
@@ -529,6 +535,20 @@ class EntropyBottleneck(EntropyModel):
     EntropyBottleneck 就是“基于完全因子化的熵模型”
     这个类基于 J. Ballé 等人在论文 "Variational image compression with a scale hyperprior" 中提出的方法。    
     
+    #! 实现思路
+    #* 我们在EntropyBottleneck类中维护2个东西的累计分布函数CDF: 非量化隐变量y的累计分布函数CDF 和 量化隐变量hat_y的累计分布函数CDF
+    #* 其中非量化隐变量y的累计分布函数CDF 可以取实数值，是直接用一个神经网络来拟合的，神经网络的参数为self.matrices, self.biases, self.factors 
+    #* 其中量化隐变量hat_y的累计分布函数CDF 只能取整数值，用一个数组来维护: self._quantized_cdf
+    #! 计算关系 
+    #* 我们使用“非量化隐变量y”的累计概率密度函数CDF就可以计算得到 “量化隐变量hat_y”的概率密度函数pmf
+    #* 再用pmf_to_quantized_cdf将 “量化隐变量hat_y”的概率密度函数pmf转换为  “量化隐变量hat_y”的累计概率密度函数CDF：self._quantized_cdf
+    #* 其中self._quantized_cdf[i] 是一个整数值，表示前i个事件的累计概率密度*(1<<precision), self._quantized_cdf[-1] 为(1<<precision)
+    
+    # 由于我们用数组self._quantized_cdf来作为量化隐变量hat_y的累计分布函数CDF，数组是只能存有限个取值，因此我们就找到量化隐变量hat_y的概率密度函数pmf的非零区间，只维护这个非零区间。
+    # self.quantiles 是用来维护 “量化隐变量hat_y”的概率密度函数的上下界以及中位数
+    #*  self.quantiles里面有维护 下界lower_bound = self.quantiles[i][0][0], 上界upper_bound = self.quantiles[i][0][2], 
+    #* 我们认为 “量化隐变量hat_y”的概率密度函数pmf只有在 [lower_bound ,  upper_bound] 之间才有非零有意义取值，其余位置(小于下界，大于上界)的pmf取值都是0，因此我们无需维护。
+    
     
     Entropy bottleneck layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
@@ -580,6 +600,10 @@ class EntropyBottleneck(EntropyModel):
         
         #! 请参考Balle 2018 论文对应的文档中的 “单变量概率密度模型实现(Univariate density model) / 累计概率密度模型” 部分
         #! 这里的self.matrices[k] 就相当于 f_k, self.biases[k] 就相当于 b_k, self.factors[k] 就相当于 a_k
+        #* self.matrices, self.biases, self.factors 是用来实现 “非量化隐变量y”的累计概率密度函数CDF，
+        #* 我们使用“非量化隐变量y”的累计概率密度函数CDF就可以计算得到 “量化隐变量hat_y”的概率密度函数pmf
+        #* 再用pmf_to_quantized_cdf将 “量化隐变量hat_y”的概率密度函数pmf转换为  “量化隐变量hat_y”的累计概率密度函数CDF：self._quantized_cdf
+        #* 其中self._quantized_cdf[i] 是一个整数值，表示前i个事件的累计概率密度*(1<<precision), self._quantized_cdf[-1] 为(1<<precision)
         self.matrices = nn.ParameterList()  #* 创建权重参数列表self.matrices。
         self.biases = nn.ParameterList()    #* 创建偏置参数列表。
         self.factors = nn.ParameterList()   #* 创建因子参数列表。
@@ -603,6 +627,10 @@ class EntropyBottleneck(EntropyModel):
         init = torch.Tensor([-self.init_scale, 0, self.init_scale]) #* 设置初始化值init = [-self.init_scale, 0, self.init_scale],这些值分别表示分位数的下界、中位数和上界。
         self.quantiles.data = init.repeat(self.quantiles.size(0), 1, 1) #* 重复初始化值以填充 分位数参数张量self.quantiles.data，维度为 (channels, 1, 3)
         #* 其中，self.quantiles.data[i] = [[-self.init_scale, 0, self.init_scale]] (1,3)
+        #! self.quantiles 是用来维护 “量化隐变量hat_y”的概率密度函数的上下界以及中位数
+        #*  self.quantiles里面有维护 下界lower_bound = self.quantiles[i][0][0], 上界upper_bound = self.quantiles[i][0][2], 
+        #* 我们认为 “量化隐变量hat_y”的概率密度函数pmf只有在 [lower_bound ,  upper_bound] 之间才有非零有意义取值，其余位置(小于下界，大于上界)的pmf取值都是0，因此我们无需维护。
+
 
         target = np.log(2 / self.tail_mass - 1)
         self.register_buffer("target", torch.Tensor([-target, 0, target]))  #* 注册目标缓冲区，维度为 (3,)。
@@ -634,7 +662,15 @@ class EntropyBottleneck(EntropyModel):
         update_quantiles: bool = False：是否更新分位数。
         
         返回值
-        返回值：一个布尔值，表示是否进行了更新。
+        返回值是一个布尔值，表示是否进行了更新。如果 _offset 已经初始化且 force 为 False，则返回 False，表示没有进行更新。否则，返回 True，表示进行了更新。
+        
+        整体执行逻辑
+        检查是否需要更新瓶颈参数。如果 _offset 已经初始化且 force 为 False，则直接返回 False。
+        如果 update_quantiles 为 True，则调用 _update_quantiles 方法更新分位数。
+        计算每个通道的中位数、最小分位值和最大分位值，并计算偏移量和 PMF 的起始点和长度。
+        生成样本 samples，并调整其维度以匹配通道数和 PMF 长度。
+        计算 PMF 和尾部质量，并将 PMF 转换为量化 CDF。
+        更新 _quantized_cdf 和 _cdf_length。
         
         """
         # Check if we need to update the bottleneck parameters, the offsets are
@@ -675,11 +711,12 @@ class EntropyBottleneck(EntropyModel):
         pmf, lower, upper = self._likelihood(samples, stop_gradient=True)   #TODO
         #* pmf, lower, upper 的维度均为(channels, 1,max_length)
         pmf = pmf[:, 0, :]  #* 去掉第二维，pmf维度为(channels,max_length), pmf[i][j] 表示在第i个通道的第j个位置的概率密度函数(pmf)
-        tail_mass = torch.sigmoid(lower[:, 0, :1]) + torch.sigmoid(-upper[:, 0, -1:])
+        tail_mass = torch.sigmoid(lower[:, 0, :1]) + torch.sigmoid(-upper[:, 0, -1:])   #* tail_mass 的维度为 (channels,)
 
-        quantized_cdf = self._pmf_to_cdf(pmf, tail_mass, pmf_length, max_length)
-        self._quantized_cdf = quantized_cdf
-        self._cdf_length = pmf_length + 2
+        quantized_cdf = self._pmf_to_cdf(pmf, tail_mass, pmf_length, max_length)    #* 使用quantized_cdf 函数 将 PMF 转换为量化 CDF
+        #* 更新 _quantized_cdf 和 _cdf_length。
+        self._quantized_cdf = quantized_cdf #* 将当前熵模型的self._quantized_cdf 更新为最新的这个quantized_cdf
+        self._cdf_length = pmf_length + 2   #* 将当前熵模型的cdf的长度 定义为 pmf长度+2
         return True
 
     def loss(self) -> Tensor:
