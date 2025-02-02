@@ -989,12 +989,6 @@ class GaussianConditional(EntropyModel):
     GaussianConditional 类的实现思路如下：
     #* 我们在GaussianConditional类中维护2个东西的累计分布函数CDF（这里的cdf就是在高斯分布下对应的累积分布）: 非量化隐变量y的累计分布函数CDF 和 量化隐变量hat_y的累计分布函数CDF
     #* 其中非量化隐变量y的累计分布函数CDF 是y通过超先验过程生成的scale_table来得到的
-    #* 其中量化隐变量hat_y的累计分布函数CDF 只能取整数值，用一个数组来维护: self._quantized_cdf
-    #! 计算关系 
-    #* 我们使用“非量化隐变量y”的累计概率密度函数CDF就可以计算得到 “量化隐变量hat_y”的概率密度函数pmf
-    #* 再用pmf_to_quantized_cdf将 “量化隐变量hat_y”的概率密度函数pmf转换为  “量化隐变量hat_y”的累计概率密度函数CDF：self._quantized_cdf
-    #* 其中self._quantized_cdf[i] 是一个整数值，表示前i个事件的累计概率密度*(1<<precision), self._quantized_cdf[-1] 为(1<<precision)
-    
     Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
     hyperprior" <https://arxiv.org/abs/1802.01436>`_.
