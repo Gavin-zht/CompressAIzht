@@ -984,11 +984,14 @@ class EntropyBottleneck(EntropyModel):
 
 class GaussianConditional(EntropyModel):
     r"""
-    GaussianConditional(高斯条件)类，是EntropyModel的子类，用于实现高斯条件模型。
+    GaussianConditional(高斯条件)类，是EntropyModel的子类，用于实现高斯条件熵模型。
     可用于生成高斯分布下的条件概率密度函数（PDF）和累积概率密度函数（CDF），索引表（indexes），从而用于对y进行条件熵编码
+    
     GaussianConditional 类的实现思路如下：
     #* 我们在GaussianConditional类中维护2个东西的累计分布函数CDF（这里的cdf就是在高斯分布下对应的累积分布）: 非量化隐变量y的累计分布函数CDF 和 量化隐变量hat_y的累计分布函数CDF
-    #* 其中非量化隐变量y的累计分布函数CDF 是y通过超先验过程生成的scale_table来得到的
+    #* 其中非量化隐变量y的累计分布函数CDF 是y通过超先验过程生成的scale_table(方差表)来得到的，因为我们在“高斯条件熵模型”中，假设非量化隐变量y服从一个 方差为scale，均值为0的高斯分布。
+    #* 因此，非量化隐变量y的累计分布函数CDF 就是一个 方差为scale，均值为0的高斯分布的CDF
+    
     Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
     hyperprior" <https://arxiv.org/abs/1802.01436>`_.
@@ -1018,9 +1021,10 @@ class GaussianConditional(EntropyModel):
         调用父类 EntropyModel 的初始化方法。
         将 scale_table ，scale_bound转换为张量。
         """
-        #scale_table维度维(batch_size, channels, height, width),就是y经过超先验模块超先验模块之后的输出，我们所假设的y的正太分布的标准差；
-        #对于scale_table[i][j][k][l],就是对于y[i][j]中某一位置的像素我们所假设的正太分布的标准差；
-        #注意，scale_table[i][j][k][l]并不一定对应y[i][j]中[k][l]位置的正太分布标准差，需要通过indexes来索引
+        #! 注意
+        #* scale_table维度为(batch_size, channels, height, width),就是y经过超先验模块超先验模块之后的输出，也即：我们所假设的y服从的正太分布的标准差；
+        #* 对于scale_table[i][j][k][l],就是对于y[i][j]中某一位置的像素我们所假设的正太分布的标准差；
+        #* 注意，scale_table[i][j][k][l]并不一定对应y[i][j]中[k][l]位置的正太分布标准差，需要通过indexes来索引
         super().__init__(*args, **kwargs)
 
         if not isinstance(scale_table, (type(None), list, tuple)):#检查scale_table是否为None, list, tuple中的一种，不是则报错
@@ -1030,7 +1034,7 @@ class GaussianConditional(EntropyModel):
             raise ValueError(f'Invalid scale_table length "{len(scale_table)}"')
 
         if scale_table and (
-            scale_table != sorted(scale_table) or any(s <= 0 for s in scale_table)#检查scale_table是否为升序排列，且保证每个元素都大于0，否则报错
+            scale_table != sorted(scale_table) or any(s <= 0 for s in scale_table)  #*如果scale_table不为空， 检查scale_table是否为升序排列，且保证每个元素都大于0，否则报错
         ):
             raise ValueError(f'Invalid scale_table "({scale_table})"')
 
@@ -1039,32 +1043,47 @@ class GaussianConditional(EntropyModel):
             scale_bound = self.scale_table[0]
         if scale_bound <= 0:
             raise ValueError("Invalid parameters")
-        self.lower_bound_scale = LowerBound(scale_bound)#将scale_bound传入LowerBound类中，确保后续使用的尺度值不会低于scale_bound
+        self.lower_bound_scale = LowerBound(scale_bound)#* 将scale_bound传入LowerBound类中，确保后续使用的尺度值不会低于scale_bound
 
         self.register_buffer(
             "scale_table",
-            self._prepare_scale_table(scale_table) if scale_table else torch.Tensor(),#若scale_table不为空，则将scale_table转换为张量，否则生成一个空张量
-        )
-
+            self._prepare_scale_table(scale_table) if scale_table else torch.Tensor(),  #*若scale_table不为空，则将scale_table转换为张量，否则生成一个空张量
+        )   #* 使用 register_buffer 方法将 scale_table 注册为模型的缓冲区
+        #* 因此，模型有 self.scale_table 属性， 
+        #! 注意
+        #* scale_table维度为(batch_size, channels, height, width),就是y经过超先验模块超先验模块之后的输出，也即：我们所假设的y服从的正太分布的标准差；
+        #* 对于scale_table[i][j][k][l],就是对于y[i][j]中某一位置的像素我们所假设的正太分布的标准差；
+        #* 注意，scale_table[i][j][k][l]并不一定对应y[i][j]中[k][l]位置的正太分布标准差，需要通过indexes来索引
+        
         self.register_buffer(
             "scale_bound",
-            torch.Tensor([float(scale_bound)]) if scale_bound is not None else None,#将scale_bound转换为张量
-        )
+            torch.Tensor([float(scale_bound)]) if scale_bound is not None else None, #*如果 scale_bound 不为 None，则将其转换为一个包含单个元素的张量。
+        )   #* 使用 register_buffer 方法将 scale_bound 注册为模型的缓冲区。
+        #* 因此，模型有 self.scale_bound 属性， 
 
     @staticmethod
-    def _prepare_scale_table(scale_table):#将scale_table转换为一个一维的张量
+    def _prepare_scale_table(scale_table):
+        """_summary_
+        该方法将 scale_table 转换为一个一维张量。每个元素被转换为浮点数，并存储在张量中。
+        """
         return torch.Tensor(tuple(float(s) for s in scale_table))
 
     def _standardized_cumulative(self, inputs: Tensor) -> Tensor:
         """
-        用于计算标准正态分布（均值为 0，标准差为 1 的正态分布）下给定输入对应的累积分布函数（CDF）值
+        功能：
+        用于计算标准正态分布（均值为 0，标准差为 1 的正态分布）下给定输入inputs对应的累积分布函数（CDF）值
+        _standardized_cumulative 是其主要功能是计算 标准正态分布（均值为 0，标准差为 1）的 累积分布函数（CDF） 值，即：F(x)=P(X≤x),X∼N(0,1) 服从标准正态分布。
         eg: _standardized_cumulative(0.0) = 0.5,即p(x<=0.0)
             _standardized_cumulative(1.29) = 0.9
             _standardized_cumulative(-1.29) = 0.1
+        参数：
+        inputs (Tensor):
+        输入值，可以是一个标量、向量或多维张量。
+        其每个元素表示一个在标准正态分布下需要计算 CDF 的数值。
 
-        实现方法：借助erfc和高斯分布下累积函数的数学表达式关系，从而计算累积分布函数的值
+        实现方法：借助torch.erfc和高斯分布下累积函数的数学表达式关系，从而计算累积分布函数的值
         """
-        half = float(0.5)
+        half = float(0.5)   #* 
         const = float(-(2**-0.5))
         # Using the complementary error function maximizes numerical precision.
         return half * torch.erfc(const * inputs)
