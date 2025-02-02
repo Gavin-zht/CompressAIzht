@@ -983,7 +983,19 @@ class EntropyBottleneck(EntropyModel):
 
 
 class GaussianConditional(EntropyModel):
-    r"""Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
+    r"""
+    GaussianConditional(高斯条件)类，是EntropyModel的子类，用于实现高斯条件模型。
+    可用于生成高斯分布下的条件概率密度函数（PDF）和累积概率密度函数（CDF），索引表（indexes），从而用于对y进行条件熵编码
+    GaussianConditional 类的实现思路如下：
+    #* 我们在GaussianConditional类中维护2个东西的累计分布函数CDF（这里的cdf就是在高斯分布下对应的累积分布）: 非量化隐变量y的累计分布函数CDF 和 量化隐变量hat_y的累计分布函数CDF
+    #* 其中非量化隐变量y的累计分布函数CDF 是y通过超先验过程生成的scale_table来得到的
+    #* 其中量化隐变量hat_y的累计分布函数CDF 只能取整数值，用一个数组来维护: self._quantized_cdf
+    #! 计算关系 
+    #* 我们使用“非量化隐变量y”的累计概率密度函数CDF就可以计算得到 “量化隐变量hat_y”的概率密度函数pmf
+    #* 再用pmf_to_quantized_cdf将 “量化隐变量hat_y”的概率密度函数pmf转换为  “量化隐变量hat_y”的累计概率密度函数CDF：self._quantized_cdf
+    #* 其中self._quantized_cdf[i] 是一个整数值，表示前i个事件的累计概率密度*(1<<precision), self._quantized_cdf[-1] 为(1<<precision)
+    
+    Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
     hyperprior" <https://arxiv.org/abs/1802.01436>`_.
 
@@ -1001,41 +1013,63 @@ class GaussianConditional(EntropyModel):
         tail_mass: float = 1e-9,
         **kwargs: Any,
     ):
+        """_summary_
+        参数：
+        scale_table：一个列表或者元组，用来定义高斯分布中的标准差
+        scale_bound：用于定义标准差的下界，默认值为0.11
+        tail_mass：尾部质量，默认值为 1e-9。
+
+        实现：
+        检查传入的参数是否合法。
+        调用父类 EntropyModel 的初始化方法。
+        将 scale_table ，scale_bound转换为张量。
+        """
+        #scale_table维度维(batch_size, channels, height, width),就是y经过超先验模块超先验模块之后的输出，我们所假设的y的正太分布的标准差；
+        #对于scale_table[i][j][k][l],就是对于y[i][j]中某一位置的像素我们所假设的正太分布的标准差；
+        #注意，scale_table[i][j][k][l]并不一定对应y[i][j]中[k][l]位置的正太分布标准差，需要通过indexes来索引
         super().__init__(*args, **kwargs)
 
-        if not isinstance(scale_table, (type(None), list, tuple)):
+        if not isinstance(scale_table, (type(None), list, tuple)):#检查scale_table是否为None, list, tuple中的一种，不是则报错
             raise ValueError(f'Invalid type for scale_table "{type(scale_table)}"')
 
-        if isinstance(scale_table, (list, tuple)) and len(scale_table) < 1:
+        if isinstance(scale_table, (list, tuple)) and len(scale_table) < 1:#检查scale_table的长度是否小于1，小于1则报错
             raise ValueError(f'Invalid scale_table length "{len(scale_table)}"')
 
         if scale_table and (
-            scale_table != sorted(scale_table) or any(s <= 0 for s in scale_table)
+            scale_table != sorted(scale_table) or any(s <= 0 for s in scale_table)#检查scale_table是否为升序排列，且保证每个元素都大于0，否则报错
         ):
             raise ValueError(f'Invalid scale_table "({scale_table})"')
 
         self.tail_mass = float(tail_mass)
-        if scale_bound is None and scale_table:
+        if scale_bound is None and scale_table:#若scale_bound为None且scale_table不为空，则将scale_table[0]作为scale_bound
             scale_bound = self.scale_table[0]
         if scale_bound <= 0:
             raise ValueError("Invalid parameters")
-        self.lower_bound_scale = LowerBound(scale_bound)
+        self.lower_bound_scale = LowerBound(scale_bound)#将scale_bound传入LowerBound类中，确保后续使用的尺度值不会低于scale_bound
 
         self.register_buffer(
             "scale_table",
-            self._prepare_scale_table(scale_table) if scale_table else torch.Tensor(),
+            self._prepare_scale_table(scale_table) if scale_table else torch.Tensor(),#若scale_table不为空，则将scale_table转换为张量，否则生成一个空张量
         )
 
         self.register_buffer(
             "scale_bound",
-            torch.Tensor([float(scale_bound)]) if scale_bound is not None else None,
+            torch.Tensor([float(scale_bound)]) if scale_bound is not None else None,#将scale_bound转换为张量
         )
 
     @staticmethod
-    def _prepare_scale_table(scale_table):
+    def _prepare_scale_table(scale_table):#将scale_table转换为一个一维的张量
         return torch.Tensor(tuple(float(s) for s in scale_table))
 
     def _standardized_cumulative(self, inputs: Tensor) -> Tensor:
+        """
+        用于计算标准正态分布（均值为 0，标准差为 1 的正态分布）下给定输入对应的累积分布函数（CDF）值
+        eg: _standardized_cumulative(0.0) = 0.5,即p(x<=0.0)
+            _standardized_cumulative(1.29) = 0.9
+            _standardized_cumulative(-1.29) = 0.1
+
+        实现方法：借助erfc和高斯分布下累积函数的数学表达式关系，从而计算累积分布函数的值
+        """
         half = float(0.5)
         const = float(-(2**-0.5))
         # Using the complementary error function maximizes numerical precision.
@@ -1043,61 +1077,115 @@ class GaussianConditional(EntropyModel):
 
     @staticmethod
     def _standardized_quantile(quantile):
+        """
+        用于计算标准正态分布（均值为 0，标准差为 1 的正态分布）下给定分位数对应的数值
+
+        eg: _standardized_quantile(0.5) = 0.0,即p(x<=a) = 0.5, a = 0。
+            _standardized_quantile(0.9) = 1.29
+            _standardized_quantile(0.1) = -1.29
+        """
         return scipy.stats.norm.ppf(quantile)
 
     def update_scale_table(self, scale_table, force=False):
         # Check if we need to update the gaussian conditional parameters, the
         # offsets are only computed and stored when the conditonal model is
         # updated.
+        """
+        功能：更新高斯条件参数
+        参数：
+        scale_table：一个新的标准差表，用于更新高斯条件参数。
+        force：一个布尔值，用于指示是否强制更新高斯条件参数。
+
+        返回值：返回true，表示成功更新了高斯条件参数。
+        """
         if self._offset.numel() > 0 and not force:
             return False
         device = self.scale_table.device
-        self.scale_table = self._prepare_scale_table(scale_table).to(device)
-        self.update()
+        self.scale_table = self._prepare_scale_table(scale_table).to(device)#更新scale_table
+        self.update()#更新高斯条件参数
         return True
 
     def update(self):
+        """_summary_
+        功能：
+        update方法用于更新高斯条件参数，包括概率质量函数（PMF） ，量化累积分布函数（CDF） ，偏移量（_offset）和 CDF 的长度（_cdf_length） 
+        
+        整体执行逻辑
+        计算出pmf_center即每个参数动态确定合适的离散化范围，并更新pmf_length，max_length
+        生成样本samples和samples_scale并调整其维度。
+        计算 PMF 和尾部质量，并将 PMF 转换为量化 CDF。
+        更新 _quantized_cdf，offsets 和 _cdf_length。
+        
+        """
         multiplier = -self._standardized_quantile(self.tail_mass / 2)
+        #除2由于tail_mass是正态分布的两侧尾部质量，所以除以2
+        #multiplier从它的定义可以看出，它是一个标准正态分布下的分位数，取负之后确定了传入的scale_table在标准所包含的距离
         pmf_center = torch.ceil(self.scale_table * multiplier).int()
-        pmf_length = 2 * pmf_center + 1
-        max_length = torch.max(pmf_length).item()
+        #pmf_center的计算通过将标准差与一标准正太分布下的分位数相乘
+        #由于这里我们的均值为0，pmf_center为每个参数动态确定合适的离散化范围
+        #eg：若scale = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3，PMF覆盖-3到+3共7个点。
+        pmf_length = 2 * pmf_center + 1#由pmf_center的含义，可以看出pmf_length的计算方法
+        max_length = torch.max(pmf_length).item()#获取pmf_length的最大值,作为最大长度
 
         device = pmf_center.device
         samples = torch.abs(
             torch.arange(max_length, device=device).int() - pmf_center[:, None]
         )
-        samples_scale = self.scale_table.unsqueeze(1)
+        #将pmf_center扩展为(pmf_center.size(0), max_length)，然后计算出samples
+        #得出samples的维度为(pmf_center.size(0), max_length)，表示每个标准差对应的离散化范围
+        """ eg：pmf_center: tensor([2, 3, 4])
+            max_length: 5
+            samples: tensor([[2, 1, 0, 1, 2],
+                            [3, 2, 1, 0, 1],
+                            [4, 3, 2, 1, 0]])
+        """""
+        samples_scale = self.scale_table.unsqueeze(1)#将scale_table扩展为(scale_table.size(0), 1)，表示每个标准差
         samples = samples.float()
         samples_scale = samples_scale.float()
+        #将samples和samples_scale转换为float类型，防止在后续计算中丢失精度
         upper = self._standardized_cumulative((0.5 - samples) / samples_scale)
         lower = self._standardized_cumulative((-0.5 - samples) / samples_scale)
+        #upper和lower表示在不同的标准差下，每个点的累积概率
         pmf = upper - lower
-
+        #即完成了pmf = CDF(input+0.5) - CDF(input-0.5)过程，得到了我们要用于编码的pmf
         tail_mass = 2 * lower[:, :1]
-
-        quantized_cdf = torch.Tensor(len(pmf_length), max_length + 2)
+        #tail_mass表示两侧尾部质量，即CDF(-0.5)的值
+        quantized_cdf = torch.Tensor(len(pmf_length), max_length + 2)#初始化quantized_cdf
         quantized_cdf = self._pmf_to_cdf(pmf, tail_mass, pmf_length, max_length)
+        #将pmf转换为量化的CDF
         self._quantized_cdf = quantized_cdf
         self._offset = -pmf_center
+        #offset表示每个标准差的偏移量，由samples的生成方法可以看出，offset的计算方法为-pmf_center
         self._cdf_length = pmf_length + 2
+        #CDF的长度为pmf_length+2
 
     def _likelihood(
         self, inputs: Tensor, scales: Tensor, means: Optional[Tensor] = None
     ) -> Tensor:
+        """
+        功能：用于计算输入张量的似然概率（likelihood）
+        具体来说，它计算每个输入值在量化区间内的概率，这些概率用于后续的熵编码和解码过程。
+        likelihood = CDF(input+0.5) - CDF(input-0.5), 表示 input的概率(pmf)
+        参数：
+        inputs：输入张量，维度为 (channels, 1, *)，其中 * 表示任意长度的额外维度。
+        scales：标准差张量，维度为 (channels, 1, *)。
+        means：均值张量，维度为 (channels, 1, *)，用于确定高斯分布的中心位置
+        返回值：likelihood：输入值的似然张量，维度与输入张量相同,维度为 ( channels, 1,  *)
+        """
         half = float(0.5)
 
         if means is not None:
             values = inputs - means
         else:
             values = inputs
-
+        #若means不为None，则将其移至以零为中心，否则直接以零为中心
         scales = self.lower_bound_scale(scales)
 
         values = torch.abs(values)
-        upper = self._standardized_cumulative((half - values) / scales)
-        lower = self._standardized_cumulative((-half - values) / scales)
+        upper = self._standardized_cumulative((half - values) / scales)#* 计算输入值加 0.5 后的分度值，即cdf（x+0.5）。这里 half 是 0.5，用于定义量化区间的边界
+        lower = self._standardized_cumulative((-half - values) / scales)#* 计算输入值减 0.5 后的分度值,即cdf（x-0.5）。
         likelihood = upper - lower
-
+        #likelihood = CDF(input+0.5) - CDF(input-0.5)
         return likelihood
 
     def forward(
@@ -1107,20 +1195,69 @@ class GaussianConditional(EntropyModel):
         means: Optional[Tensor] = None,
         training: Optional[bool] = None,
     ) -> Tuple[Tensor, Tensor]:
+        """
+        _summary_
+        功能
+        forward 方法是 GausianConditional 类的前向传播方法，用于处理输入张量input，并返回量化后的输出张量和似然张量。
+        这个方法在训练和推理过程中都会被调用，根据 training 参数的不同，行为也会有所不同。
+
+        参数
+        input: Tensor：输入张量，维度为 (batch_size, channels, *)，其中 * 表示任意长度的额外维度。
+        scales: Tensor：标准差张量，维度为 (batch_size, channels, *)。
+        means: Optional[Tensor] = None：均值张量，维度为 (batch_size, channels, *)，用于确定高斯分布的中心位置。
+        training: Optional[bool] = None：是否处于训练模式。如果为 None，则使用 self.training 的值。
+        
+        返回值：一个包含两个张量的元组 (outputs, likelihood)：
+        outputs：量化后的输出张量，维度与输入张量相同。
+        likelihood：输入值的似然张量，维度与输入张量相同。
+        
+        实现逻辑：
+        
+        将input送进量化器self.quantize进行量化得到量化结果outputs, 
+        然后用_likelihood计算似然概率，然后将输出的(量化结果outputs)和(似然概率 likelihood)。
+        """
         if training is None:
             training = self.training
         outputs = self.quantize(inputs, "noise" if training else "dequantize", means)
+        #根据训练模式，对输入张量values 进行量化或反量化。如果 training 为 True，则添加噪声；否则，进行反量化
+        #量化后的值为 outputs
         likelihood = self._likelihood(outputs, scales, means)
+        #计算量化后的输出张量的似然
         if self.use_likelihood_bound:
             likelihood = self.likelihood_lower_bound(likelihood)
+        #是否使用下界，如果使用下界，则进行运算
         return outputs, likelihood
 
     def build_indexes(self, scales: Tensor) -> Tensor:
+        """_summary_
+        功能
+        build_indexes 方法用于生成索引张量，这些索引张量用于在熵编码和解码过程中引用每个通道的累积分布函数（CDF）。
+        这个方法根据输入张量的大小生成索引张量，确保每个通道的索引在处理过程中被正确引用。
+
+        参数
+        scales：标准差张量，维度为 (batch_size, channels, height, width)，表示高斯分布的标准差，对其中元素生成索引
+        
+        返回值
+        返回值：索引张量indexes，维度为 (batch_size, channels, height, width)，其中每个元素是通道索引。
+        整体执行逻辑
+        创建索引张量：根据输入张量的大小生成索引张量，所有元素初始化为len(self.scale_table) - 1
+        遍历标准差更新索引。
+        """
         scales = self.lower_bound_scale(scales)
-        indexes = scales.new_full(scales.size(), len(self.scale_table) - 1).int()
+        indexes = scales.new_full(scales.size(), len(self.scale_table) - 1).int()#生成一个与scales相同大小的张量，元素值为len(self.scale_table) - 1
         for s in self.scale_table[:-1]:
             indexes -= (scales <= s).int()
-        return indexes
+        #如果某个位置的标准差小于或等于当前的 s，则将该位置对应的索引减 1。
+        #由于我们的scale_table的单增的，索引使用这种索引的方式
+        return indexes#返回索引张量
+    """
+    eg:这里就用二维scales简化一下
+        scale_table = [0.1, 0.2, 0.3, 0.4, 0.5]
+        scales = torch.tensor(
+            [0.15, 0.25, 0.35],
+            [0.45, 0.05, 0.55])
+        indexes = [[1, 2, 3], [4, 0, 4]]
+    """
 
 
 class GaussianMixtureConditional(GaussianConditional):
