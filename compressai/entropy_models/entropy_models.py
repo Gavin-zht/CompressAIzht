@@ -356,7 +356,7 @@ class EntropyModel(nn.Module):
         """_summary_
 
         功能：将概率密度函数（PMF）转换为累积分布函数（CDF）。
-        #! 这里的pmf是指量化后隐变量hat_y的概率密度函数
+        #! 这里的pmf是指量化后隐变量hat_y的概率密度函数, CDF指量化后隐变量hat_y的累积分布函数
         
         参数：
         pmf：概率密度函数， 维度为 (channels, max_length)
@@ -365,7 +365,9 @@ class EntropyModel(nn.Module):
         max_length：最大长度，为一个标量
         
         #! 理解:
-        由于我们维护的是有限个离散位置的
+        由于我们维护的是有限个离散位置的概率, i.e. i在[A,B]这个区间内，pmf[i]表示 量化后隐变量hat_y 取值为A+i的概率, cdf[i] 表示 量化后隐变量hat_y 在[A,A+i]这个区间的累计概率密度
+        那么对于[-无穷，A] 区间 和[B, 无穷]区间，我们就不维护了(因为概率太小了)
+        [-无穷,A] 区间的 (累计概率密度)为 tail_mass /2, [B, 无穷] 区间的 (累计概率密度)为 tail_mass /2
         
         
         实现：
@@ -549,11 +551,14 @@ class EntropyBottleneck(EntropyModel):
     #* 再用pmf_to_quantized_cdf将 “量化隐变量hat_y”的概率密度函数pmf转换为  “量化隐变量hat_y”的累计概率密度函数CDF：self._quantized_cdf
     #* 其中self._quantized_cdf[i] 是一个整数值，表示前i个事件的累计概率密度*(1<<precision), self._quantized_cdf[-1] 为(1<<precision)
     
+    #! 理解:
     # 由于我们用数组self._quantized_cdf来作为量化隐变量hat_y的累计分布函数CDF，数组是只能存有限个取值，因此我们就找到量化隐变量hat_y的概率密度函数pmf的非零区间，只维护这个非零区间。
     # self.quantiles 是用来维护 “量化隐变量hat_y”的概率密度函数的上下界以及中位数
     #*  self.quantiles里面有维护 下界lower_bound = self.quantiles[i][0][0], 上界upper_bound = self.quantiles[i][0][2], 
-    #* 我们认为 “量化隐变量hat_y”的概率密度函数pmf只有在 [lower_bound ,  upper_bound] 之间才有非零有意义取值，其余位置(小于下界，大于上界)的pmf取值都是0，因此我们无需维护。
-    
+    lowerbound 就是下面提到的A， upper_bound就是下面提到的B
+    由于我们维护的是有限个离散位置的概率, i.e. i在[A,B]这个区间内，pmf[i]表示 量化后隐变量hat_y 取值为A+i的概率, cdf[i] 表示 量化后隐变量hat_y 在[A,A+i]这个区间的累计概率密度
+    那么对于[-无穷，A] 区间 和[B, 无穷]区间，我们就不维护了(因为概率太小了)
+    [-无穷,A] 区间的 (累计概率密度)为 tail_mass /2, [B, 无穷] 区间的 (累计概率密度)为 tail_mass /2
     
     Entropy bottleneck layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
@@ -583,6 +588,8 @@ class EntropyBottleneck(EntropyModel):
         tail_mass：尾部质量，默认为 1e-9。
         init_scale：初始化缩放因子，默认为 10。
         filters：滤波器大小，默认为 (3, 3, 3, 3)。
+        
+        
         
         实现：
         调用父类 EntropyModel 的初始化方法。
@@ -997,8 +1004,10 @@ class GaussianConditional(EntropyModel):
     #* 其中非量化隐变量y的累计分布函数CDF 是y通过超先验过程生成的scale_table(方差表)来得到的，因为我们在“高斯条件熵模型”中，假设非量化隐变量y服从一个 方差为scale，均值为0的高斯分布。
     #* 因此，非量化隐变量y的累计分布函数CDF 就是一个 方差为scale，均值为0的高斯分布的CDF
     
-    代码中维护了一个尾部质量self.tail，是一个小量(1e-9级别)，是一个固定的参数，用来防止代码中计算出无穷大(e.g. log(0)就是无穷)
-    
+    lowerbound 就是下面提到的A， upper_bound就是下面提到的B
+    由于我们维护的是有限个离散位置的概率, i.e. i在[A,B]这个区间内，pmf[i]表示 量化后隐变量hat_y 取值为A+i的概率, cdf[i] 表示 量化后隐变量hat_y 在[A,A+i]这个区间的累计概率密度
+    那么对于[-无穷，A] 区间 和[B, 无穷]区间，我们就不维护了(因为概率太小了)
+    [-无穷,A] 区间的 (累计概率密度)为 tail_mass /2, [B, 无穷] 区间的 (累计概率密度)为 tail_mass /2
     
     Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
@@ -1157,33 +1166,32 @@ class GaussianConditional(EntropyModel):
         6. 更新 `_quantized_cdf`、`_offset` 和 `_cdf_length`。
         
         """
-        multiplier = -self._standardized_quantile(self.tail_mass / 2)   
-        #* 通过 _standardized_quantile 方法计算标准正态分布的分位数。
-        #除2由于tail_mass是正态分布的两侧尾部质量，所以除以2
-        #multiplier从它的定义可以看出，它是一个标准正态分布下的分位数，取负之后确定了传入的scale_table在标准所包含的距离
-        #* multiplier 是一个正数
-        pmf_center = torch.ceil(self.scale_table * multiplier).int()   
-        # pmf_center的计算通过将标准差与一标准正太分布下的分位数相乘
-        #pmf_center:表示我们可能的离散化覆盖范围的中心。
+        multiplier = -self._standardized_quantile(self.tail_mass / 2)   #* 通过 _standardized_quantile 方法计算标准正态分布的下界位置，然后取反表示上界。
+        #* 除2由于tail_mass是正态分布的两侧尾部质量，所以self.tail_mass / 2 表示左侧的下界位置
+        #* multiplier 是一个正数, 表示标准正态分布在区间: [-multiplier , multiplier] 这一段内的累计概率密度为 1-self.tail_mass
+        pmf_center = torch.ceil(self.scale_table * multiplier).int()   #* pmf_center 表示 标准差为scale, 均值为0的正态分布的上界
+        #* pmf_center的计算通过将(标准差 scale)与 (标准正太分布的上界)相乘
+        #* pmf_center:表示标准差为scale, 均值为0的正态分布在区间: [-pmf_center , pmf_center] 这一段内的累计概率密度为 1-self.tail_mass
         #eg：若scale_table[i] = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3
         #* self.scale 是一个一维向量，因此 pmf_center 也是一个一维向量, pmf_center的维度为(self.scale_table.size(0), )
-        pmf_length = 2 * pmf_center + 1 #* 由于我们假设y的满足正态分布，由于他的对称性
-         #eg：若scale_table[i] = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3,pmf_length = 7,即对于scale_table[i]对应的像素的离散化覆盖范围为0-6
+        pmf_length = 2 * pmf_center + 1 #* 由于我们假设y的满足正态分布，这个正态分布的上界为pmf_center, 由于他的对称性, 我们需要维护的区间为[-pmf_center, pmf_center], 总长度为2*pmf_center+1
+        #eg：若scale_table[i] = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3,pmf_length = 7,即对于标准差为scale_table[i]的正态分布，我们需要维护区间[-3 ,3]这一段的概率
         max_length = torch.max(pmf_length).item()   #获取pmf_length的最大值,作为最大长度, max_length是一个标量
 
-        #到这里y的概率分布实际上，被我们表示成了一个（pmf_center, scable_table^2）的正态分布。
         device = pmf_center.device
         samples = torch.abs(
             torch.arange(max_length, device=device).int() - pmf_center[:, None]
-        )
+        )   
+        #! 注意，这里的torch.abs实际上可以去掉，去掉的理由与 “_likelihood”函数中的解读相同, 因此，在下面的解读中我们按照去掉torch.abs的方式来进行解读
         # 将pmf_center扩展为(self.scale_table.size(0), max_length)，然后计算出samples
-        #* 得出samples的维度为(max_length, max_length)，表示每个概率分布对应的离散化范围
-        #对于sample[i][j] 表示 在scale_table[i]的方差之下，对于可能的离散化值，j与“均值”pmf_center的距离，既然是距离，绝对值是有用的
-        """ eg：pmf_center: tensor([2, 3, 4])
+        #* 得出samples的维度为(self.scale_table.size(0), max_length)，表示每个概率分布对应的离散化范围
+        #* 对于samples[i] 是一个一维数组， 表示 对于均值为0，标准差为 scale_table[i]的正态分布，我们采样了[-pmf_center,pmf_center] 这个区间， 因此samples[i][j]= j-pmf_cnter[i]
+        """ eg：pmf_center: tensor([1,2])
             max_length: 5
-            samples: tensor([[2, 1, 0, 1, 2],
-                            [3, 2, 1, 0, 1],
-                            [4, 3, 2, 1, 0]])
+            samples: tensor([[-1, 0, 1, 2, 3],
+                            [-2, -1, 0, 1, 2]])
+            samples[0] = [-1,0,1,2,3], 但其中实际有效的部分是[-1,0,1]([-pmf_center, pmf_center]这一段), 其余会在后续处理中丢弃。
+            samples[1] = [-2, -1, 0, 1, 2], 其中实际有效的部分是[-2, -1, 0, 1, 2], 
         """""
         samples_scale = self.scale_table.unsqueeze(1)#* 将scale_table扩展为(self.scale_table.size(0), 1)，表示每个标准差
         samples = samples.float()
@@ -1193,22 +1201,22 @@ class GaussianConditional(EntropyModel):
         #* samples 维度: (self.scale_table.size(0), max_length)
         #* samples_scale 维度 (self.scale_table.size(0), 1)
         
-        upper = self._standardized_cumulative((0.5 - samples) / samples_scale)  #* upper 计算 CDF(input + 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以pmf_center为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
+        #! 注意，下面利用了正态分布的对称性: i.e. CDF(x+0.5) -CDF(x-0.5) = CDF(-x+0.5) -CDF(-x-0.5), 这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为标准的正态分布
+        upper = self._standardized_cumulative((0.5 - samples) / samples_scale)  #* upper 计算 CDF(-input + 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为标准差的正态分布，我们借助标准正态分布来计算其值
         #* upper的维度: (self.scale_table.size(0), max_length), upper[i][j] 表示 CDF(samples[i][j])， 其中这个CDF的方差为samples_scale[i]
-        #为什么这么算：samples[i][j] = |j - pmf_center[i]|，即j与pmf_center之间的距离，由于我们要借助标准正态分布来求其值，（0.5-samples）/scale就表示j + 0.5在标准正态分布下的分位数点
-        lower = self._standardized_cumulative((-0.5 - samples) / samples_scale) #* lower 计算 CDF(input - 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以pmf_center为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
+        lower = self._standardized_cumulative((-0.5 - samples) / samples_scale) #* lower 计算 CDF(-input - 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为标准差的正态分布，我们借助标准正态分布来计算其值
         #* lower的维度: (self.scale_table.size(0), max_length), lower[i][j] 表示 CDF(samples[i][j])， 其中这个CDF的方差为samples_scale[i]
-        #upper和lower表示在不同的标准差下，每个点的累积概率
         pmf = upper - lower
-        #* pmf = CDF(input+0.5) - CDF(input-0.5)过程，得到了我们要用于编码的pmf
-        tail_mass = 2 * lower[:, :1]
-        #tail_mass表示两侧尾部质量，即CDF(-0.5)的值
+        #* pmf = CDF(-input+0.5) - CDF(-input-0.5) = CDF(input+0.5) - CDF(input-0.5)， pmf表示“量化隐变量hat_y”的概率密度函数， CDF表示 非量化隐变量y的累计分布函数
+        #* pmf 的维度:  (self.scale_table.size(0), max_length),  pmf[i][j] 表示 对于均值为0，方差为scale[i]的那个隐变量y, 他对应的量化隐变量y_hat 在坐标为 (j-pmf_center[i])的位置的概率密度函数
+        tail_mass = 2 * lower[:, :1]    #* tail_mass 表示 对于 量化隐变量y_hat 的概率分布中我们需要丢弃的累计概率
+        #* 因为我们打算只维护:[-pmf_center , pmf_center] 这一段的概率，因此对于 量化隐变量y_hat  在(-无穷, -pmf_center) 这个区间和  ( pmf_center, 无穷) 这个区间中的概率需要丢掉
+        #* (-无穷, -pmf_center) 这个区间内的概率总计就是lower[0]
         quantized_cdf = torch.Tensor(len(pmf_length), max_length + 2)#初始化quantized_cdf
-        quantized_cdf = self._pmf_to_cdf(pmf, tail_mass, pmf_length, max_length)
+        quantized_cdf = self._pmf_to_cdf(pmf, tail_mass, pmf_length, max_length)    #* 将概率密度函数（PMF）转换为累积分布函数（CDF）。 #! 这里的pmf是指量化后隐变量hat_y的概率密度函数
         #将pmf转换为量化的CDF
         self._quantized_cdf = quantized_cdf
-        self._offset = -pmf_center
-        #offset表示每个标准差的偏移量，由samples的生成方法可以看出，offset的计算方法为-pmf_center
+        self._offset = -pmf_center #* offset 是一个一维向量，大小为(self.scale_table.size(0),), offset[i] 表示 对于 均值为0，标准差为scale的正态分布, 所对应的偏移量
         self._cdf_length = pmf_length + 2
         #CDF的长度为pmf_length+2
 
@@ -1217,8 +1225,10 @@ class GaussianConditional(EntropyModel):
     ) -> Tensor:
         """
         功能：用于计算输入张量的似然概率（likelihood）
-        具体来说，它计算每个输入值在量化区间内的概率，这些概率用于后续的熵编码和解码过程。
-        likelihood = CDF(input+0.5) - CDF(input-0.5), 表示 input的概率(pmf)
+        具体来说，它计算
+        每个输入值在量化区间内的概率，这些概率用于后续的熵编码和解码过程。
+        likelihood = CDF(-input+0.5) - CDF(-input-0.5) = CDF(input+0.5) - CDF(input-0.5), 这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为标准的正态分布
+        likelihood 表示 input的概率密度函数(pmf)
         参数：
         inputs：输入张量，维度为 (channels, 1, *)，其中 * 表示任意长度的额外维度。
         scales：标准差张量，维度为 (channels, 1, *)。
@@ -1234,11 +1244,12 @@ class GaussianConditional(EntropyModel):
         #若means不为None，则将其移至以零为中心，否则直接以零为中心
         scales = self.lower_bound_scale(scales)
 
-        values = torch.abs(values)
+        values = torch.abs(values)  #* 这个torch.abs可以去掉，并不影响结果
+        #! 注意，下面利用了正态分布的对称性: i.e. CDF(x+0.5) -CDF(x-0.5) = CDF(-x+0.5) -CDF(-x-0.5), 这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为标准的正态分布
         upper = self._standardized_cumulative((half - values) / scales)#* 计算输入值加 0.5 后的分度值，即cdf（x+0.5）。这里 half 是 0.5，用于定义量化区间的边界
         lower = self._standardized_cumulative((-half - values) / scales)#* 计算输入值减 0.5 后的分度值,即cdf（x-0.5）。
-        likelihood = upper - lower
-        #likelihood = CDF(input+0.5) - CDF(input-0.5)
+        likelihood = upper - lower  #* likelihood = CDF(-input+0.5) - CDF(-input-0.5) = CDF(input+0.5) - CDF(input-0.5)， 
+        #* likelihood 表示“量化隐变量hat_y”的概率密度函数， CDF表示 非量化隐变量y的累计分布函数
         return likelihood
 
     def forward(
