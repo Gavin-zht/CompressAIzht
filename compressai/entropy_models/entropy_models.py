@@ -356,12 +356,17 @@ class EntropyModel(nn.Module):
         """_summary_
 
         功能：将概率密度函数（PMF）转换为累积分布函数（CDF）。
+        #! 这里的pmf是指量化后隐变量hat_y的概率密度函数
         
         参数：
         pmf：概率密度函数， 维度为 (channels, max_length)
-        tail_mass：尾部质量， 维度为 (channels,)
+        tail_mass：尾部概率， 维度为 (channels,)
         pmf_length：PMF的长度, 为一个标量
         max_length：最大长度，为一个标量
+        
+        #! 理解:
+        由于我们维护的是有限个离散位置的
+        
         
         实现：
         创建一个大小为 (len(pmf_length), max_length + 2) 的零张量 cdf。
