@@ -1156,28 +1156,29 @@ class GaussianConditional(EntropyModel):
         5. 将 PMF 转换为量化的 CDF。
         6. 更新 `_quantized_cdf`、`_offset` 和 `_cdf_length`。
         
-        
         """
         multiplier = -self._standardized_quantile(self.tail_mass / 2)   
         #* 通过 _standardized_quantile 方法计算标准正态分布的分位数。
         #除2由于tail_mass是正态分布的两侧尾部质量，所以除以2
         #multiplier从它的定义可以看出，它是一个标准正态分布下的分位数，取负之后确定了传入的scale_table在标准所包含的距离
         #* multiplier 是一个正数
-        pmf_center = torch.ceil(self.scale_table * multiplier).int()    # pmf_center的计算通过将标准差与一标准正太分布下的分位数相乘
-        #   由于这里我们的均值为0，pmf_center为每个参数动态确定合适的离散化范围
-        #eg：若scale = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3，PMF覆盖-3到+3共7个点。
-        
+        pmf_center = torch.ceil(self.scale_table * multiplier).int()   
+        # pmf_center的计算通过将标准差与一标准正太分布下的分位数相乘
+        #pmf_center:表示我们可能的离散化覆盖范围的中心。
+        #eg：若scale_table[i] = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3
         #* self.scale 是一个一维向量，因此 pmf_center 也是一个一维向量, pmf_center的维度为(self.scale_table.size(0), )
-        pmf_length = 2 * pmf_center + 1 #* 由pmf_center的含义，可以看出pmf_length的计算方法
+        pmf_length = 2 * pmf_center + 1 #* 由于我们假设y的满足正态分布，由于他的对称性
+         #eg：若scale_table[i] = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3,pmf_length = 7,即对于scale_table[i]对应的像素的离散化覆盖范围为0-6
         max_length = torch.max(pmf_length).item()   #获取pmf_length的最大值,作为最大长度, max_length是一个标量
 
+        #到这里y的概率分布实际上，被我们表示成了一个（pmf_center, scable_table^2）的正态分布。
         device = pmf_center.device
         samples = torch.abs(
             torch.arange(max_length, device=device).int() - pmf_center[:, None]
         )
         # 将pmf_center扩展为(self.scale_table.size(0), max_length)，然后计算出samples
-        #* 得出samples的维度为(self.scale_table.size(0), max_length)，表示每个概率分布对应的离散化范围
-        #* samples[i] 是一个一维向量，表示 第i个概率分布pmf的横坐标取值范围(从该pmf的下界到上界)
+        #* 得出samples的维度为(max_length, max_length)，表示每个概率分布对应的离散化范围
+        #对于sample[i][j] 表示 在scale_table[i]的方差之下，对于可能的离散化值，j与“均值”pmf_center的距离，既然是距离，绝对值是有用的
         """ eg：pmf_center: tensor([2, 3, 4])
             max_length: 5
             samples: tensor([[2, 1, 0, 1, 2],
@@ -1192,9 +1193,10 @@ class GaussianConditional(EntropyModel):
         #* samples 维度: (self.scale_table.size(0), max_length)
         #* samples_scale 维度 (self.scale_table.size(0), 1)
         
-        upper = self._standardized_cumulative((0.5 - samples) / samples_scale)  #* upper 计算 CDF(input + 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
+        upper = self._standardized_cumulative((0.5 - samples) / samples_scale)  #* upper 计算 CDF(input + 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以pmf_center为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
         #* upper的维度: (self.scale_table.size(0), max_length), upper[i][j] 表示 CDF(samples[i][j])， 其中这个CDF的方差为samples_scale[i]
-        lower = self._standardized_cumulative((-0.5 - samples) / samples_scale) #* lower 计算 CDF(input - 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
+        #为什么这么算：samples[i][j] = |j - pmf_center[i]|，即j与pmf_center之间的距离，由于我们要借助标准正态分布来求其值，（0.5-samples）/scale就表示j + 0.5在标准正态分布下的分位数点
+        lower = self._standardized_cumulative((-0.5 - samples) / samples_scale) #* lower 计算 CDF(input - 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以pmf_center为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
         #* lower的维度: (self.scale_table.size(0), max_length), lower[i][j] 表示 CDF(samples[i][j])， 其中这个CDF的方差为samples_scale[i]
         #upper和lower表示在不同的标准差下，每个点的累积概率
         pmf = upper - lower
