@@ -992,6 +992,9 @@ class GaussianConditional(EntropyModel):
     #* 其中非量化隐变量y的累计分布函数CDF 是y通过超先验过程生成的scale_table(方差表)来得到的，因为我们在“高斯条件熵模型”中，假设非量化隐变量y服从一个 方差为scale，均值为0的高斯分布。
     #* 因此，非量化隐变量y的累计分布函数CDF 就是一个 方差为scale，均值为0的高斯分布的CDF
     
+    代码中维护了一个尾部质量self.tail，是一个小量(1e-9级别)，是一个固定的参数，用来防止代码中计算出无穷大(e.g. log(0)就是无穷)
+    
+    
     Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
     S. J. Hwang, N. Johnston, in `"Variational image compression with a scale
     hyperprior" <https://arxiv.org/abs/1802.01436>`_.
@@ -1014,7 +1017,7 @@ class GaussianConditional(EntropyModel):
         参数：
         scale_table：一个列表或者元组，用来定义高斯分布中的标准差
         scale_bound：用于定义标准差的下界，默认值为0.11
-        tail_mass：尾部质量，默认值为 1e-9。
+        tail_mass：尾部质量，默认值为 1e-9
 
         实现：
         检查传入的参数是否合法。
@@ -1091,7 +1094,7 @@ class GaussianConditional(EntropyModel):
     @staticmethod
     def _standardized_quantile(quantile):
         """
-        用于计算标准正态分布（均值为 0，标准差为 1 的正态分布）下给定分位数对应的数值
+        功能： 用于计算标准正态分布（均值为 0，标准差为 1 的正态分布）下给定分位数对应的数值
 
         eg: _standardized_quantile(0.5) = 0.0,即p(x<=a) = 0.5, a = 0。
             _standardized_quantile(0.9) = 1.29
@@ -1104,63 +1107,93 @@ class GaussianConditional(EntropyModel):
         # offsets are only computed and stored when the conditonal model is
         # updated.
         """
-        功能：更新高斯条件参数
+        
+        功能：更新高斯条件熵模型中的方差表
         参数：
         scale_table：一个新的标准差表，用于更新高斯条件参数。
         force：一个布尔值，用于指示是否强制更新高斯条件参数。
 
-        返回值：返回true，表示成功更新了高斯条件参数。
+        返回值：
+        返回true，表示成功更新了高斯条件参数。
+        返回false，表示没有更新高斯条件参数。
         """
         if self._offset.numel() > 0 and not force:
             return False
         device = self.scale_table.device
-        self.scale_table = self._prepare_scale_table(scale_table).to(device)#更新scale_table
-        self.update()#更新高斯条件参数
+        self.scale_table = self._prepare_scale_table(scale_table).to(device)#* 使用self._prepare_scale_table将 输入的scale_table 转换为一个一维张量。每个元素被转换为浮点数，并存储在张量中。
+        #* self.scale_table 表示 新的高斯方差表
+        self.update() #* 更新高斯条件参数
         return True
 
     def update(self):
         """_summary_
-        功能：
-        update方法用于更新高斯条件参数，包括概率质量函数（PMF） ，量化累积分布函数（CDF） ，偏移量（_offset）和 CDF 的长度（_cdf_length） 
+        ### 
+        # 整体介绍 `update` 函数的功能
+        `update` 函数用于更新高斯条件熵模型的关键参数，包括概率质量函数（PMF）、量化累积分布函数（CDF）、偏移量（`_offset`）和 CDF 的长度（`_cdf_length`）。
+        这些参数是高斯条件熵模型进行熵编码和解码的核心组成部分。
+        通过更新这些参数，模型能够根据当前的 `scale_table` 动态调整离散化范围和概率分布，从而更准确地进行熵编码。
+
+        ### 分析 `update` 函数的参数
+        # `update` 函数没有显式的参数。它依赖于类实例的属性，特别是 `scale_table` 和 `tail_mass`，这些属性在 `__init__` 函数中被初始化。
+
+        ### 分析 `update` 函数的返回值
+        `update` 函数没有显式的返回值。它的主要作用是更新类实例的以下属性：
+        1. **`_quantized_cdf`**: 量化后的累积分布函数（CDF），用于熵编码。
+        2. **`_offset`**: 偏移量，用于调整离散化范围。
+        3. **`_cdf_length`**: CDF 的长度，用于确定编码和解码的范围。
+
+
+        ### 高度概括 `update` 函数的整体执行逻辑
+        1. 计算 `pmf_center`，确定每个标准差的离散化范围。
+        2. 计算 `pmf_length` 和 `max_length`，确定 PMF 的最大长度。
+        3. 生成样本 `samples` 和 `samples_scale`，用于计算 PMF(i.e. 量化后隐变量y的概率密度函数)
+        4. 计算 PMF 和尾部质量（`tail_mass`）。
+        5. 将 PMF 转换为量化的 CDF。
+        6. 更新 `_quantized_cdf`、`_offset` 和 `_cdf_length`。
         
-        整体执行逻辑
-        计算出pmf_center即每个参数动态确定合适的离散化范围，并更新pmf_length，max_length
-        生成样本samples和samples_scale并调整其维度。
-        计算 PMF 和尾部质量，并将 PMF 转换为量化 CDF。
-        更新 _quantized_cdf，offsets 和 _cdf_length。
         
         """
-        multiplier = -self._standardized_quantile(self.tail_mass / 2)
+        multiplier = -self._standardized_quantile(self.tail_mass / 2)   
+        #* 通过 _standardized_quantile 方法计算标准正态分布的分位数。
         #除2由于tail_mass是正态分布的两侧尾部质量，所以除以2
         #multiplier从它的定义可以看出，它是一个标准正态分布下的分位数，取负之后确定了传入的scale_table在标准所包含的距离
-        pmf_center = torch.ceil(self.scale_table * multiplier).int()
-        #pmf_center的计算通过将标准差与一标准正太分布下的分位数相乘
-        #由于这里我们的均值为0，pmf_center为每个参数动态确定合适的离散化范围
+        #* multiplier 是一个正数
+        pmf_center = torch.ceil(self.scale_table * multiplier).int()    # pmf_center的计算通过将标准差与一标准正太分布下的分位数相乘
+        #   由于这里我们的均值为0，pmf_center为每个参数动态确定合适的离散化范围
         #eg：若scale = 0.5，multiplier = 6，则pmf_center = ceil(0.5 * 6) = 3，PMF覆盖-3到+3共7个点。
-        pmf_length = 2 * pmf_center + 1#由pmf_center的含义，可以看出pmf_length的计算方法
-        max_length = torch.max(pmf_length).item()#获取pmf_length的最大值,作为最大长度
+        
+        #* self.scale 是一个一维向量，因此 pmf_center 也是一个一维向量, pmf_center的维度为(self.scale_table.size(0), )
+        pmf_length = 2 * pmf_center + 1 #* 由pmf_center的含义，可以看出pmf_length的计算方法
+        max_length = torch.max(pmf_length).item()   #获取pmf_length的最大值,作为最大长度, max_length是一个标量
 
         device = pmf_center.device
         samples = torch.abs(
             torch.arange(max_length, device=device).int() - pmf_center[:, None]
         )
-        #将pmf_center扩展为(pmf_center.size(0), max_length)，然后计算出samples
-        #得出samples的维度为(pmf_center.size(0), max_length)，表示每个标准差对应的离散化范围
+        # 将pmf_center扩展为(self.scale_table.size(0), max_length)，然后计算出samples
+        #* 得出samples的维度为(self.scale_table.size(0), max_length)，表示每个概率分布对应的离散化范围
+        #* samples[i] 是一个一维向量，表示 第i个概率分布pmf的横坐标取值范围(从该pmf的下界到上界)
         """ eg：pmf_center: tensor([2, 3, 4])
             max_length: 5
             samples: tensor([[2, 1, 0, 1, 2],
                             [3, 2, 1, 0, 1],
                             [4, 3, 2, 1, 0]])
         """""
-        samples_scale = self.scale_table.unsqueeze(1)#将scale_table扩展为(scale_table.size(0), 1)，表示每个标准差
+        samples_scale = self.scale_table.unsqueeze(1)#* 将scale_table扩展为(self.scale_table.size(0), 1)，表示每个标准差
         samples = samples.float()
         samples_scale = samples_scale.float()
         #将samples和samples_scale转换为float类型，防止在后续计算中丢失精度
-        upper = self._standardized_cumulative((0.5 - samples) / samples_scale)
-        lower = self._standardized_cumulative((-0.5 - samples) / samples_scale)
+        
+        #* samples 维度: (self.scale_table.size(0), max_length)
+        #* samples_scale 维度 (self.scale_table.size(0), 1)
+        
+        upper = self._standardized_cumulative((0.5 - samples) / samples_scale)  #* upper 计算 CDF(input + 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
+        #* upper的维度: (self.scale_table.size(0), max_length), upper[i][j] 表示 CDF(samples[i][j])， 其中这个CDF的方差为samples_scale[i]
+        lower = self._standardized_cumulative((-0.5 - samples) / samples_scale) #* lower 计算 CDF(input - 0.5)，这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为方差的正态分布，我们借助标准正态分布来计算其值
+        #* lower的维度: (self.scale_table.size(0), max_length), lower[i][j] 表示 CDF(samples[i][j])， 其中这个CDF的方差为samples_scale[i]
         #upper和lower表示在不同的标准差下，每个点的累积概率
         pmf = upper - lower
-        #即完成了pmf = CDF(input+0.5) - CDF(input-0.5)过程，得到了我们要用于编码的pmf
+        #* pmf = CDF(input+0.5) - CDF(input-0.5)过程，得到了我们要用于编码的pmf
         tail_mass = 2 * lower[:, :1]
         #tail_mass表示两侧尾部质量，即CDF(-0.5)的值
         quantized_cdf = torch.Tensor(len(pmf_length), max_length + 2)#初始化quantized_cdf
