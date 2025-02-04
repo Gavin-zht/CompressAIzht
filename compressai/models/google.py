@@ -386,7 +386,11 @@ class ScaleHyperprior(CompressionModel):
 
 @register_model("mbt2018-mean")
 class MeanScaleHyperprior(ScaleHyperprior):
-    r"""Scale Hyperprior with non zero-mean Gaussian conditionals from D.
+    r"""
+    超先验模块同时提供 均值和方差
+    
+    
+    来源: Scale Hyperprior with non zero-mean Gaussian conditionals from D.
     Minnen, J. Balle, G.D. Toderici: `"Joint Autoregressive and Hierarchical
     Priors for Learned Image Compression" <https://arxiv.org/abs/1809.02736>`_,
     Adv. in Neural Information Processing Systems 31 (NeurIPS 2018).
@@ -431,7 +435,7 @@ class MeanScaleHyperprior(ScaleHyperprior):
             conv(N, N),
             nn.LeakyReLU(inplace=True),
             conv(N, N),
-        )
+        )   #*  重载定义了超先验编码器 h_a
 
         self.h_s = nn.Sequential(
             deconv(N, M),
@@ -439,33 +443,52 @@ class MeanScaleHyperprior(ScaleHyperprior):
             deconv(M, M * 3 // 2),
             nn.LeakyReLU(inplace=True),
             conv(M * 3 // 2, M * 2, stride=1, kernel_size=3),
-        )
+        )   #*  重载定义了超先验解码器 h_s
 
     def forward(self, x):
-        y = self.g_a(x)
-        z = self.h_a(y)
-        z_hat, z_likelihoods = self.entropy_bottleneck(z)
-        gaussian_params = self.h_s(z_hat)
-        scales_hat, means_hat = gaussian_params.chunk(2, 1)
-        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
-        x_hat = self.g_s(y_hat)
+        """_summary_
+        
+        输入参数: 待编码的图像x
+        
+        函数返回值：
+        为一个字典，字典中存放了 重建图像x_hat, 以及 量化后隐特征的概率 y_likelihoods， 量化后超先验特征的概率 z_likelihoods
+        """
+        y = self.g_a(x) #* 分析变换得到 隐特征y
+        z = self.h_a(y) #* 超先验编码器以y为输入 得到 超先验特征 z 
+        z_hat, z_likelihoods = self.entropy_bottleneck(z)   #* 调用 self.entropy_bottleneck的forward方法来输出 量化后超先验特征 hat_z 以及 量化后超先验特征的概率 z_likelihoods
+        gaussian_params = self.h_s(z_hat)   #* 将量化后超先验特征 hat_z 输入给超先验解码器来计算得到  量化后隐特征hat_y 所对应的高斯分布的参数(均值和方差)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1) #* 将均值和方差分离开
+        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat) #* 使用高斯条件熵模型 对 隐特征y进行编码，其中方差为scales_hat, 均值为means_hat
+        #* 得到 量化后隐特征 hat_y 以及 量化后隐特征的概率 y_likelihoods
+        x_hat = self.g_s(y_hat) #* 将量化后隐特征 hat_y 输入给 生成变换 计算得到重建图像 hat_x
 
         return {
             "x_hat": x_hat,
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
-        }
+        }   #* forward函数返回值为一个字典，字典中存放了 重建图像x_hat, 以及 量化后隐特征的概率 y_likelihoods， 量化后超先验特征的概率 z_likelihoods
 
     def compress(self, x):
+        """_summary_
+
+        功能： 对输入图像x进行编码压缩
+        
+        返回值: 
+        一个字典
+        - key="strings", 表示 编码得到的二进制码流，[y_strings, z_strings]
+        - key="shape", 表示 超先验隐变量z的空间维度(h,w)
+        
+        
+        """
         y = self.g_a(x)
         z = self.h_a(y)
 
-        z_strings = self.entropy_bottleneck.compress(z)
-        z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+        z_strings = self.entropy_bottleneck.compress(z) #* 使用完全因子化熵模型对 超先验隐变量z 进行压缩 得到 z对应的二进制码流 z_strings
+        z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])    #* 使用完全因子化熵模型对 对应的二进制码流 z_strings进行解压缩得到 量化后的超先验隐变量 z_hat
 
         gaussian_params = self.h_s(z_hat)
         scales_hat, means_hat = gaussian_params.chunk(2, 1)
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
-        y_strings = self.gaussian_conditional.compress(y, indexes, means=means_hat)
+        y_strings = self.gaussian_conditional.compress(y, indexes, means=means_hat) #* 使用 高斯条件熵模型对 隐特征y进行编码压缩，得到 y对应的二进制码流 y_strings
         return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
 
     def decompress(self, strings, shape):
@@ -483,7 +506,12 @@ class MeanScaleHyperprior(ScaleHyperprior):
 
 @register_model("mbt2018")
 class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
-    r"""Joint Autoregressive Hierarchical Priors model from D.
+    r"""
+    
+    同时使用“上下文自回归模型” 以及 “均值方差高斯条件熵模型” 的 图像编码模型
+    
+    
+    Joint Autoregressive Hierarchical Priors model from D.
     Minnen, J. Balle, G.D. Toderici: `"Joint Autoregressive and Hierarchical
     Priors for Learned Image Compression" <https://arxiv.org/abs/1809.02736>`_,
     Adv. in Neural Information Processing Systems 31 (NeurIPS 2018).
