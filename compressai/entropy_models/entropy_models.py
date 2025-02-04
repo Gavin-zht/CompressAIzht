@@ -1004,6 +1004,14 @@ class GaussianConditional(EntropyModel):
     #* 其中非量化隐变量y的累计分布函数CDF 是y通过超先验过程生成的scale_table(方差表)来得到的，因为我们在“高斯条件熵模型”中，假设非量化隐变量y服从一个 方差为scale，均值为0的高斯分布。
     #* 因此，非量化隐变量y的累计分布函数CDF 就是一个 方差为scale，均值为0的高斯分布的CDF
     
+    #! 重要理解
+    #* 我们在GaussianConditional类中维护了 方差表 self.scale_table, 维护了 len(self.scale_table) 个 不同的 量化隐变量hat_y的累计分布函数CDF 和 len(self.scale_table) 个 不同的 非量化隐变量y的累计分布函数CDF
+    #* self.scale_table[i] 是一个标量，表示第i个标准差， 第i个  非量化隐变量y的累计分布函数CDF的方差为0，标准差为self.scale_table[i]的高斯分布
+    #* 通过第i个  非量化隐变量y的累计分布函数CDF我们可以计算得到 第i个 量化隐变量hat_y的累计分布函数CDF, i.e. _quantized_cdf[i]
+    #* 因此，我现在已经维护好了一些标准差(scale_table)和对应的量化隐变量hat_y的累计分布函数CDF，  我告诉你只能从这里面选
+    #* 当用户在使用的时候，你输入一个自己的scale，  我们通过build_index函数，这个时候我就在我的scale_table里面找第一个比你的scale大的的值，作为你的“近似值”
+    #* 使用这个近似值对应的那个 量化隐变量hat_y的累计分布函数CDF 作为你后续输入的概率分布，也就是用这个CDF来对你后续输入的符号进行压缩
+    
     lowerbound 就是下面提到的A， upper_bound就是下面提到的B
     由于我们维护的是有限个离散位置的概率, i.e. i在[A,B]这个区间内，pmf[i]表示 量化后隐变量hat_y 取值为A+i的概率, cdf[i] 表示 量化后隐变量hat_y 在[A,A+i]这个区间的累计概率密度
     那么对于[-无穷，A] 区间 和[B, 无穷]区间，我们就不维护了(因为概率太小了)
@@ -1038,10 +1046,7 @@ class GaussianConditional(EntropyModel):
         调用父类 EntropyModel 的初始化方法。
         将 scale_table ，scale_bound转换为张量。
         """
-        #! 注意
-        #* scale_table维度为(batch_size, channels, height, width),就是y经过超先验模块超先验模块之后的输出，也即：我们所假设的y服从的正太分布的标准差；
-        #* 对于scale_table[i][j][k][l],就是对于y[i][j]中某一位置的像素我们所假设的正太分布的标准差；
-        #* 注意，scale_table[i][j][k][l]并不一定对应y[i][j]中[k][l]位置的正太分布标准差，需要通过indexes来索引
+
         super().__init__(*args, **kwargs)
 
         if not isinstance(scale_table, (type(None), list, tuple)):#检查scale_table是否为None, list, tuple中的一种，不是则报错
@@ -1066,11 +1071,7 @@ class GaussianConditional(EntropyModel):
             "scale_table",
             self._prepare_scale_table(scale_table) if scale_table else torch.Tensor(),  #*若scale_table不为空，则将scale_table转换为张量，否则生成一个空张量
         )   #* 使用 register_buffer 方法将 scale_table 注册为模型的缓冲区
-        #* 因此，模型有 self.scale_table 属性， 
-        #! 注意
-        #* scale_table维度为(batch_size, channels, height, width),就是y经过超先验模块超先验模块之后的输出，也即：我们所假设的y服从的正太分布的标准差；
-        #* 对于scale_table[i][j][k][l],就是对于y[i][j]中某一位置的像素我们所假设的正太分布的标准差；
-        #* 注意，scale_table[i][j][k][l]并不一定对应y[i][j]中[k][l]位置的正太分布标准差，需要通过indexes来索引
+        #* 因此，模型有 self.scale_table 属性，self.scale_table 是一个一维列表， 且其元素值是递增的 
         
         self.register_buffer(
             "scale_bound",
@@ -1226,14 +1227,16 @@ class GaussianConditional(EntropyModel):
         """
         功能：用于计算输入张量的似然概率（likelihood）
         具体来说，它计算
-        每个输入值在量化区间内的概率，这些概率用于后续的熵编码和解码过程。
+        每个输入值inputs[i] 的概率，对于inputs[i] ，他表示 量化后隐变量hat_y, 他对应的非量化隐变量y 服从均值为0， 标准差为scales[i] 的正态分布
         likelihood = CDF(-input+0.5) - CDF(-input-0.5) = CDF(input+0.5) - CDF(input-0.5), 这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为标准的正态分布
         likelihood 表示 input的概率密度函数(pmf)
         参数：
-        inputs：输入张量，维度为 (channels, 1, *)，其中 * 表示任意长度的额外维度。
-        scales：标准差张量，维度为 (channels, 1, *)。
-        means：均值张量，维度为 (channels, 1, *)，用于确定高斯分布的中心位置
-        返回值：likelihood：输入值的似然张量，维度与输入张量相同,维度为 ( channels, 1,  *)
+        inputs：输入张量，表示 量化后隐变量hat_y, 维度为 (batch_size, channels,  *)，其中 * 表示任意长度的额外维度。
+        scales：标准差张量，维度为 (batch_size, channels, *)。
+        means：均值张量，维度为 (batch_size, channels,  *)，用于确定高斯分布的中心位置
+        
+        返回值：
+        likelihood：输入值inputs的似然(概率)张量，维度与输入张量相同,维度为 (batch_size, channels,  *)
         """
         half = float(0.5)
 
@@ -1244,10 +1247,10 @@ class GaussianConditional(EntropyModel):
         #若means不为None，则将其移至以零为中心，否则直接以零为中心
         scales = self.lower_bound_scale(scales)
 
-        values = torch.abs(values)  #* 这个torch.abs可以去掉，并不影响结果
+        values = torch.abs(values)  #* 这个torch.abs可以去掉，并不影响结果, 下面的讨论是按照没有torch.abs的版本进行的
         #! 注意，下面利用了正态分布的对称性: i.e. CDF(x+0.5) -CDF(x-0.5) = CDF(-x+0.5) -CDF(-x-0.5), 这个CDF(非量化隐变量y的累计分布函数)是一个以0为均值，scale为标准的正态分布
-        upper = self._standardized_cumulative((half - values) / scales)#* 计算输入值加 0.5 后的分度值，即cdf（x+0.5）。这里 half 是 0.5，用于定义量化区间的边界
-        lower = self._standardized_cumulative((-half - values) / scales)#* 计算输入值减 0.5 后的分度值,即cdf（x-0.5）。
+        upper = self._standardized_cumulative((half - values) / scales)#* 计算输入值加 0.5 后的分度值，即cdf（-x+0.5）。这里 half 是 0.5，用于定义量化区间的边界
+        lower = self._standardized_cumulative((-half - values) / scales)#* 计算输入值减 0.5 后的分度值,即cdf（-x-0.5）。
         likelihood = upper - lower  #* likelihood = CDF(-input+0.5) - CDF(-input-0.5) = CDF(input+0.5) - CDF(input-0.5)， 
         #* likelihood 表示“量化隐变量hat_y”的概率密度函数， CDF表示 非量化隐变量y的累计分布函数
         return likelihood
@@ -1272,49 +1275,79 @@ class GaussianConditional(EntropyModel):
         training: Optional[bool] = None：是否处于训练模式。如果为 None，则使用 self.training 的值。
         
         返回值：一个包含两个张量的元组 (outputs, likelihood)：
-        outputs：量化后的输出张量，维度与输入张量相同。
-        likelihood：输入值的似然张量，维度与输入张量相同。
+        outputs：量化后的输出张量，维度与输入张量相同, 维度为  (batch_size, channels, *)
+        likelihood：输入值的似然张量，维度与输入张量相同, 维度为  (batch_size, channels, *)
         
         实现逻辑：
         
-        将input送进量化器self.quantize进行量化得到量化结果outputs, 
+        将input送进量化器self.quantize进行量化得到量化结果outputs(量化后隐变量hat_y)
         然后用_likelihood计算似然概率，然后将输出的(量化结果outputs)和(似然概率 likelihood)。
         """
         if training is None:
             training = self.training
-        outputs = self.quantize(inputs, "noise" if training else "dequantize", means)
-        #根据训练模式，对输入张量values 进行量化或反量化。如果 training 为 True，则添加噪声；否则，进行反量化
-        #量化后的值为 outputs
-        likelihood = self._likelihood(outputs, scales, means)
-        #计算量化后的输出张量的似然
-        if self.use_likelihood_bound:
+        outputs = self.quantize(inputs, "noise" if training else "dequantize", means)   #* 根据训练模式，对输入张量inputs 进行量化或反量化。如果 training 为 True，则添加噪声；否则，进行反量化(outputs = inputs + means)
+        #*  outputs 表示 量化后隐变量hat_y
+        likelihood = self._likelihood(outputs, scales, means)   #* 计算量化后隐变量hat_y的似然(概率)
+        if self.use_likelihood_bound:   #* 是否使用下界，如果使用下界，则对likelihood进行取下界运算
             likelihood = self.likelihood_lower_bound(likelihood)
-        #是否使用下界，如果使用下界，则进行运算
+        
         return outputs, likelihood
 
     def build_indexes(self, scales: Tensor) -> Tensor:
         """_summary_
-        功能
-        build_indexes 方法用于生成索引张量，这些索引张量用于在熵编码和解码过程中引用每个通道的累积分布函数（CDF）。
-        这个方法根据输入张量的大小生成索引张量，确保每个通道的索引在处理过程中被正确引用。
-
-        参数
-        scales：标准差张量，维度为 (batch_size, channels, height, width)，表示高斯分布的标准差，对其中元素生成索引
+        #! 理解意义:
+        build_indexes 是用于指明 输入的scales值是对应的哪个概率分布。
         
-        返回值
-        返回值：索引张量indexes，维度为 (batch_size, channels, height, width)，其中每个元素是通道索引。
-        整体执行逻辑
-        创建索引张量：根据输入张量的大小生成索引张量，所有元素初始化为len(self.scale_table) - 1
-        遍历标准差更新索引。
+        功能：
+        `build_indexes` 函数的主要功能是根据输入的 `scales`（标准差张量）和 `self.scale_table`（标准差表），生成一个索引张量 `indexes`。
+        该索引张量用于将 `scales` 中的每个值与 `self.scale_table` 中的值进行比较，从而确定每个 `scale` 在 `self.scale_table` 中的位置索引。
+
+        ### 分析 `build_indexes` 函数的参数
+        `build_indexes` 函数有一个参数：
+        1. **scales (Tensor)**: 输入的标准差张量，表示每个位置的标准差值。其形状可以是任意维度，但通常为 `(batch_size, channels, height, width)` 或类似的多维形状。
+
+        ### 分析 `build_indexes` 函数的返回值
+
+        `build_indexes` 函数返回一个张量 `indexes`，其形状与输入的 `scales` 相同。`indexes` 中的每个值表示对应 `scale` 在 `self.scale_table` 中的索引位置。
+        i.e. index[i] 的最终值，就是在self.scale_table中第一个不小于 scale[i]的值的索引
+
+        ### 高度概括 `build_indexes` 函数的整体执行逻辑
+
+        1. 对输入的 `scales` 进行下界约束，确保其值不低于 `self.lower_bound_scale`。
+        2. 初始化一个与 `scales` 形状相同的张量 `indexes`，并将其所有元素设置为 `len(self.scale_table) - 1`。
+        3. 遍历 `self.scale_table` 中的每个值（除了最后一个），并根据 `scales` 与当前值的比较结果更新 `indexes`。
+        4. 返回最终的索引张量 `indexes`。
         """
         scales = self.lower_bound_scale(scales)
-        indexes = scales.new_full(scales.size(), len(self.scale_table) - 1).int()#生成一个与scales相同大小的张量，元素值为len(self.scale_table) - 1
-        for s in self.scale_table[:-1]:
+        indexes = scales.new_full(scales.size(), len(self.scale_table) - 1).int()#* 创建一个与 scales 形状相同的张量 indexes，并将其所有元素初始化为 len(self.scale_table) - 1
+        #* self.scale_table 是一个一维向量
+        for s in self.scale_table[:-1]: #* 遍历self.scale_table中的每一个元素 s
             indexes -= (scales <= s).int()
-        #如果某个位置的标准差小于或等于当前的 s，则将该位置对应的索引减 1。
-        #由于我们的scale_table的单增的，索引使用这种索引的方式
+            #* 遍历 self.scale_table 中的每个值s，并根据 scales 与当前值 s 的比较结果更新 indexes
+            #* 对于每个 s，如果 scales 中的某个值小于等于 s，则将 indexes 中对应位置的值减 1;(scales <= s).int() 将布尔张量转换为整数张量（True 转换为 1，False 转换为 0）。
+        #! 理解
+        #* 我们考察 indexes[i] 这一个元素， 他之和 scales[i] 有关
+        #* 上面的循环会遍历self.scale_table 中的每一个元素s， 如果scale[i] <= s, 那么index[i]就会-1; 并且self.scale_table 是一个递增的列表
+        #* index[i] 的最终值，就是在self.scale_table中第一个不小于 scale[i]的值的索引
+        #*  
+
+
         return indexes#返回索引张量
+        #* 返回最终的索引张量 indexes，其形状与输入的 scales 相同。
+        #* indexes 中的每个值表示对应 scale 在 self.scale_table 中的索引位置。index[i] 的最终值，就是在self.scale_table中第一个不小于 scale[i]的值的索引
     """
+    假设 self.scale_table = [0.1, 0.2, 0.3, 0.4]，scales 中的某个值为 0.25，indexes 初始化为 3。
+    遍历过程：
+    s = 0.1，0.25 <= 0.1 为 False，indexes 保持不变。
+
+    s = 0.2，0.25 <= 0.2 为 False，indexes 保持不变。
+
+    s = 0.3，0.25 <= 0.3 为 True，indexes 减 1，变为 2。
+    最终 indexes 中的值为 2，表示 0.25 在 self.scale_table 中的索引为 2
+    
+    
+    
+    
     eg:这里就用二维scales简化一下
         scale_table = [0.1, 0.2, 0.3, 0.4, 0.5]
         scales = torch.tensor(
