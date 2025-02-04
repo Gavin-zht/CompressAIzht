@@ -428,6 +428,14 @@ class EntropyModel(nn.Module):
 
         返回值：压缩后的字符串(码流)列表。
         
+        #! 理解:
+        为了简单起见，我们不妨将inputs 和 indexes 和 means都拍扁成“一维向量”
+        inputs[i] 是我们要压缩的变量，我们会先对其进行量化，得到量化后的值 symbols[i] = quantize (inputs[i])
+        然后我们利用 indexes[i] 指明 对于这个量化变量symbols[i] 他所使用的CDF是哪一个， i.e. _quantized_cdf[indexes[i]] 是  这个量化变量symbols[i] 对应的CDF
+        然后调用self.entropy_coder.encode_with_indexes 这个函数来对symbols[i] 进行RANS熵编码压缩。
+        压缩得到二进制字符串码流
+        
+        
         实现过程
         使用 quantize 方法将输入张量 inputs 量化为符号张量 symbols。
         检查 inputs 的维度是否至少为2，如果不是则抛出 ValueError。
@@ -1083,6 +1091,8 @@ class GaussianConditional(EntropyModel):
     def _prepare_scale_table(scale_table):
         """_summary_
         该方法将 scale_table 转换为一个一维张量。每个元素被转换为浮点数，并存储在张量中。
+        
+        返回值: scale_table 被转换为一维张量(torch.tensor)的版本
         """
         return torch.Tensor(tuple(float(s) for s in scale_table))
 
