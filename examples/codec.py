@@ -130,11 +130,52 @@ def torch2img(x: torch.Tensor) -> Image.Image:
 
 
 def write_uints(fd, values, fmt=">{:d}I"):
+    """_summary_
+    ">{:d}I" 表示 写入 len(values) 个无符号整数(4字节)
+    """
     fd.write(struct.pack(fmt.format(len(values)), *values))
     return len(values) * 4
 
 
 def write_uchars(fd, values, fmt=">{:d}B"):
+    """_summary_
+    功能
+    将无符号字符（unsigned char，即 1 字节的无符号整数）数据写入文件描述符 fd。
+
+    参数
+    fd：文件描述符。
+    values：无符号字符数据，通常是一个整数列表（如 [1, 2, 3]）。
+
+    fmt：格式化字符串，默认为 ">{:d}B"，表示以大端模式（>）打包长度为 len(values) 的无符号字符数据。
+
+    实现细节
+    打包数据：使用 struct.pack 将 values 打包为二进制格式。
+
+    fmt.format(len(values)) 动态生成格式化字符串。例如，如果 values 的长度为 3，则格式化字符串为 ">3B"，表示打包 3 个无符号字符。
+    因为fmt为">{:d}B" , 由于len(values)==3, 就会把3填入到{:d}的位置，变成“>3B” 表示要以大端方式填入3个无符号字符(1个字节的无符号字符)
+    
+    *values 将列表解包为多个参数传递给 struct.pack。
+
+    写入文件：使用 fd.write 将打包后的二进制数据写入文件。
+
+    返回值：
+    返回写入的字节数，即 len(values) * 1（每个无符号字符占 1 个字节）。
+
+    举例" 
+    with open("output.bin", "wb") as fd:
+        write_uchars(fd, [1, 2, 3])  # 写入无符号字符数据 [1, 2, 3]
+        
+    
+    struct.pack 的介绍:   
+    struct.pack 是 Python 标准库 struct 模块中的一个函数，用于将 Python 的数据类型（如整数、浮点数、字符串等）打包为二进制数据。
+    struct.pack(fmt, v1, v2, ...)
+    fmt：格式化字符串，指定如何将数据打包为二进制格式。
+    v1, v2, ...：要打包的数据，可以是整数、浮点数、字符串等    
+        
+    # 打包两个无符号短整数（2 字节）和一个无符号整数（4 字节）
+    data = struct.pack(">HHI", 256, 512, 1024)
+    print(data)  # 输出: b'\x01\x00\x02\x00\x00\x00\x04\x00'    
+    """
     fd.write(struct.pack(fmt.format(len(values)), *values))
     return len(values) * 1
 
@@ -145,11 +186,49 @@ def read_uints(fd, n, fmt=">{:d}I"):
 
 
 def read_uchars(fd, n, fmt=">{:d}B"):
+    """_summary_
+    功能: 
+    用于从文件描述符 fd 中读取指定数量的无符号字符（unsigned char，即 1 字节的无符号整数），并将其解包为 Python 的整数列表。
+    
+    参数:
+    fd：文件描述符，通常是一个已打开的文件对象（如通过 open() 返回的对象）。
+    n：要读取的无符号字符的数量。
+    fmt：格式化字符串，默认为 ">{:d}B"，表示以大端模式（>）解包 n 个无符号字符。
+    
+    返回值:
+    返回解包后的无符号字符列表。
+    
+    struct.unpack 返回一个元组，即使只解包一个值。如果需要列表，可以使用 list() 进行转换：
+    
+    
+    举例:
+    假设文件 input.bin 包含以下二进制数据（3 个无符号字符）：
+0x01 0x02 0x03
+调用 read_uchars 函数：
+with open("input.bin", "rb") as fd:
+    result = read_uchars(fd, 3)
+    print(result)  # 输出: (1, 2, 3)
+    """
     sz = struct.calcsize("B")
-    return struct.unpack(fmt.format(n), fd.read(n * sz))
+    # 使用 struct.calcsize("B") 计算单个无符号字符的大小（以字节为单位）。
+    # 对于无符号字符（B），sz 的值为 1。
+    
+    
+    # 使用 struct.unpack 将读取的二进制数据解包为 Python 的整数列表。
+    # fmt.format(n) 动态生成格式化字符串。例如，如果 n 为 3，则格式化字符串为 ">3B"，表示解包 3 个无符号字符。
+    #* fd.read(n * sz) 表示从fd对应的文件中读取 n * sz 个字节，用这些内容来解包； 作为要解包的二进制数据。
+    return struct.unpack(fmt.format(n), fd.read(n * sz))    #* 返回解包后的无符号字符列表。
 
 
 def write_bytes(fd, values, fmt=">{:d}s"):
+    """_summary_
+    >{:d}s 表示 以大端方式写入一个长度为 len(values) 的字符串
+
+    例子: 
+    # 打包一个 5 字节的字符串
+data = struct.pack("5s", b"hello")
+print(data)  # 输出: b'hello'
+    """
     if len(values) == 0:
         return
     fd.write(struct.pack(fmt.format(len(values)), values))
@@ -157,8 +236,15 @@ def write_bytes(fd, values, fmt=">{:d}s"):
 
 
 def read_bytes(fd, n, fmt=">{:d}s"):
+    """_summary_
+    "{:d}s" 表示读取一个长度为 n 的字节串。
+
+    """
     sz = struct.calcsize("s")
+    # struct.calcsize("s") 用来计算一个 s 类型数据的大小。"s" 表示一个字节串，calcsize("s") 结果会返回单个字节串的大小，这通常是 1 字节。
+    # 因此，sz 的值通常是 1，表示每个字节串的大小为 1 字节。
     return struct.unpack(fmt.format(n), fd.read(n * sz))[0]
+#* struct.unpack(fmt.format(n), ...) 返回的是一个元组，所以我们使用 [0] 来提取元组中的第一个元素，即字节串。
 
 
 def get_header(model_name, metric, quality, num_of_frames, codec_type: Enum):
@@ -206,9 +292,16 @@ def read_body(fd):
 
 
 def write_body(fd, shape, out_strings):
+    """_summary_
+
+    shape[0] 表示 z的h, shape[1] 表示 z的w
+    out_strings == [y_likelihood, z_likelihood]
+    
+    """
     bytes_cnt = 0
-    bytes_cnt = write_uints(fd, (shape[0], shape[1], len(out_strings)))
+    bytes_cnt = write_uints(fd, (shape[0], shape[1], len(out_strings))) #* 将这个元组 (shape[0], shape[1], len(out_strings)) 中的每个元素以无符号整数的形式转换为二进制数据写入fd文件
     for s in out_strings:
+        #* s 遍历 out_strings, 
         bytes_cnt += write_uints(fd, (len(s[0]),))
         bytes_cnt += write_bytes(fd, s[0])
     return bytes_cnt
@@ -319,6 +412,7 @@ def encode_image(input, codec: CodecInfo, output):
         write_uchars(f, (bitdepth,)) #* 调用 write_uchars(f, (bitdepth,)) 将原始图像的位深写入文件。
         # write shape and number of encoded latents
         write_body(f, shape, out["strings"]) #* 调用 write_body(f, shape, out["strings"]) 将压缩后的数据形状和字符串数据(码流)写入文件。
+        #* out["strings"]  == [y_likelihood, z_likelihood]
 
     size = filesize(output) #* 使用 filesize(output) 获取输出文件的大小（字节数）。
     bpp = float(size) * 8 / (h * w) #* 计算比特率 bpp（bits per pixel），即每个像素平均占用的比特数，计算公式为 float(size) * 8 / (h * w)。
