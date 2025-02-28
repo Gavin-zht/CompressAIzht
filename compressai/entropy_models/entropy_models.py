@@ -488,17 +488,14 @@ class EntropyModel(nn.Module):
         Decompress char strings to tensors.
 
         参数:
-            strings (str): 压缩后的字符串列表。
-            indexes (torch.IntTensor): CDF索引张量。
+            strings 是一个列表，长度为symbols.size(0)(批量大小)， 列表中的每一个元素都表示一个码流，用来代表 inputs[i] 压缩得到的码流字符串
+            indexes (torch.IntTensor): CDF索引张量, 维度为: (B,C,H,W)
             dtype (torch.dtype): 反量化输出的类型，默认为 torch.float。
             means (torch.Tensor, optional): 可选参数，均值张量。
 
-
-        Args:
-            strings (str): compressed tensors
-            indexes (torch.IntTensor): tensors CDF indexes
-            dtype (torch.dtype): type of dequantized output
-            means (torch.Tensor, optional): optional tensor means
+        返回值:
+        outputs: (B,C,H,W), 表示 解压缩得到的张量
+        
         """
 
         if not isinstance(strings, (tuple, list)):
@@ -527,6 +524,7 @@ class EntropyModel(nn.Module):
 
         cdf = self._quantized_cdf
         outputs = cdf.new_empty(indexes.size()) #* 创建一个与 indexes 大小相同的空张量 outputs，用于存储解码后的值。
+        #* outputs的维度为: (B,C,H,W)
 
         for i, s in enumerate(strings):
             #* 遍历 strings 的每个字符串 s：
@@ -1000,8 +998,14 @@ class EntropyBottleneck(EntropyModel):
         #* strings 是一个列表，长度为symbols.size(0)(批量大小)， 列表中的每一个元素都表示一个码流，用来代表 inputs[i] 压缩得到的码流字符串
 
     def decompress(self, strings, size):
-        output_size = (len(strings), self._quantized_cdf.size(0), *size)
-        indexes = self._build_indexes(output_size).to(self._quantized_cdf.device)
+        """_summary_
+        输入参数:
+        strings 是一个列表，长度为symbols.size(0)(批量大小)， 列表中的每一个元素都表示一个码流，用来代表 inputs[i] 压缩得到的码流字符串
+        size: (H,W), 代表特征图的高度和宽度
+        
+        """
+        output_size = (len(strings), self._quantized_cdf.size(0), *size)    #* output_size =(B,C,H,W)
+        indexes = self._build_indexes(output_size).to(self._quantized_cdf.device)   #* indexes 维度为: (B,C,H,W)
         medians = self._extend_ndims(self._get_medians().detach(), len(size))
         medians = medians.expand(len(strings), *([-1] * (len(size) + 1)))
         return super().decompress(strings, indexes, medians.dtype, medians)
