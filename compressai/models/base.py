@@ -184,6 +184,20 @@ class CompressionModel(nn.Module):
         遍历模型的所有模块，累加所有 EntropyBottleneck 模块的损失。
 
 
+        与“net”优化器使用的主要“net”损失不同，“aux”损失仅由“aux”优化器使用，用于更新仅 `EntropyBottleneck.quantiles` 参数。事实上，“aux”损失完全不依赖于图像数据。
+
+        “aux”损失的目的是确定给定分布的大部分质量所在的范围及其中位数（即50%概率）。也就是说，对于给定的分布，“aux”损失会朝着满足以下条件的方向收敛（对于某个选定的 `tail_mass` 概率）：
+
+        - `cdf(quantiles[0]) = tail_mass / 2`
+        - `cdf(quantiles[1]) = 0.5`
+        - `cdf(quantiles[2]) = 1 - tail_mass / 2`
+
+        这确保了具体的 `_quantized_cdf` 主要在有限支持的区域内操作。任何超出此范围的符号必须使用不涉及 `_quantized_cdf` 的替代方法进行编码。
+        幸运的是，可以选择一个足够小的 `tail_mass` 概率，使得这种情况很少发生。
+        重要的是，我们使用的 `_quantized_cdf` 具有较小的有限支持；否则，熵编码的运行性能会受到影响。因此，`tail_mass` 也不应设置得过小！
+
+
+
         In contrast to the primary "net" loss used by the "net"
         optimizer, the "aux" loss is only used by the "aux" optimizer to
         update *only* the ``EntropyBottleneck.quantiles`` parameters. In
