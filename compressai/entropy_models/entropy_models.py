@@ -426,7 +426,8 @@ class EntropyModel(nn.Module):
         indexes：CDF索引张量，类型为 torch.IntTensor, 维度为(batch_size , channels, height, width)
         means：可选参数，均值张量，类型为 Optional[torch.Tensor]，维度为(batch_size , channels, height, width)
 
-        返回值：压缩后的字符串(码流)列表。
+        返回值：压缩后的字符串(码流)列表strings.
+        strings 是一个列表，长度为symbols.size(0)(批量大小)， 列表中的每一个元素都表示一个码流，用来代表 inputs[i] 压缩得到的码流字符串
         
         #! 理解:
         为了简单起见，我们不妨将inputs 和 indexes 和 means都拍扁成“一维向量”
@@ -473,6 +474,7 @@ class EntropyModel(nn.Module):
             )
             #传入参数时将torch.Tensor格式转换为list。
             strings.append(rv)  #* 将编码结果存储在 strings 列表中。
+        #! 至此，strings 是一个列表，长度为symbols.size(0)(批量大小)， 列表中的每一个元素都表示一个码流，用来代表 symbols[i] 压缩得到的码流字符串
         return strings  #* 返回 strings 列表，其中每个元素是一个压缩后的字符串。
 
     def decompress(
@@ -972,7 +974,8 @@ class EntropyBottleneck(EntropyModel):
         x: Tensor：输入张量，维度为 (batch_size, channels, height, width)。
         
         返回值
-        返回值：压缩后的字符串列表，每个字符串表示一个批次的压缩数据。
+        #* 返回值：压缩后的字符串(码流)列表strings.
+        #* strings 是一个列表，长度为symbols.size(0)(批量大小)， 列表中的每一个元素都表示一个码流，用来代表 x[i] 压缩得到的码流字符串
         
         整体执行逻辑
         生成索引张量：根据输入张量的大小生成索引张量。
@@ -993,6 +996,8 @@ class EntropyBottleneck(EntropyModel):
         #* index_list = indexes[i].reshape(-1).int().tolist()的结果为:一个长度为(channels x height x width)的列表，且index_list[j*(heightxwidth) : (j+1)*(heightxwidth)] 的取值为j
         #* 这就表示: symbols[i][j] 中的那 height x width 个元素，都会使用第 j 个CDF(累计概率密度函数)， 也就是说：cdf[j] 是对应于图片第j个通道的累计概率密度函数
         return super().compress(x, indexes, medians)
+        #* 返回值：压缩后的字符串(码流)列表strings.
+        #* strings 是一个列表，长度为symbols.size(0)(批量大小)， 列表中的每一个元素都表示一个码流，用来代表 inputs[i] 压缩得到的码流字符串
 
     def decompress(self, strings, size):
         output_size = (len(strings), self._quantized_cdf.size(0), *size)
