@@ -133,7 +133,10 @@ class CompressionModel(nn.Module):
         #! 注意: 当模型训练完，在评估之前，需要执行一下这个update函数来更新熵模型中的CDF函数
         原因: 因为在模型评估的时候，会使用 rv = self.entropy_coder.encode_with_indexes 来进行真正的压缩；
         在encode_with_indexes函数中，会使用self._quantized_cdf 来作为量化后隐变量的概率分布函数
-        
+        实际上，我们在训练的时候，都是直接使用 非量化隐变量y的累计分布函数CDF 去计算 量化隐变量hat_y 的概率分布CDF； 然后得到量化后隐变量的概率值;
+        在这个过程中，我们并不需要使用self._quantized_cdf
+        但是我们在模型评估/测试的时候，却要使用self._quantized_cdf来进行真实的压缩，因此我们需要在测试/评估之前，将self._quantized_cdf更新到最新的正确值。
+            
         功能：更新模型中的 EntropyBottleneck 和 GaussianConditional 模块的累积分布函数（CDF）:self._quantized_cdf
         
         
