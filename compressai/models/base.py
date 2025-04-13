@@ -130,8 +130,14 @@ class CompressionModel(nn.Module):
     def update(self, scale_table=None, force=False, update_quantiles: bool = False):
         """Updates EntropyBottleneck and GaussianConditional CDFs.
 
-
-        功能：更新模型中的 EntropyBottleneck 和 GaussianConditional 模块的累积分布函数（CDF）。
+        #! 注意: 当模型训练完，在评估之前，需要执行一下这个update函数来更新熵模型中的CDF函数
+        原因: 因为在模型评估的时候，会使用 rv = self.entropy_coder.encode_with_indexes 来进行真正的压缩；
+        在encode_with_indexes函数中，会使用self._quantized_cdf 来作为量化后隐变量的概率分布函数
+        
+        功能：更新模型中的 EntropyBottleneck 和 GaussianConditional 模块的累积分布函数（CDF）:self._quantized_cdf
+        
+        
+        
         
         参数：
         scale_table：缩放表，用于初始化高斯分布，默认为 None。

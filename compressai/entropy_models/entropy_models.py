@@ -559,6 +559,12 @@ class EntropyBottleneck(EntropyModel):
     #* 再用pmf_to_quantized_cdf将 “量化隐变量hat_y”的概率密度函数pmf转换为  “量化隐变量hat_y”的累计概率密度函数CDF：self._quantized_cdf
     #* 其中self._quantized_cdf[i] 是一个整数值，表示前i个事件的累计概率密度*(1<<precision), self._quantized_cdf[-1] 为(1<<precision)
     
+    #! 重要: 
+    实际上，我们在训练的时候，都是直接使用 非量化隐变量y的累计分布函数CDF 去计算 量化隐变量hat_y 的概率分布CDF； 然后得到量化后隐变量的概率值;
+    在这个过程中，我们并不需要使用self._quantized_cdf
+    但是我们在模型评估/测试的时候，却要使用self._quantized_cdf来进行真实的压缩，因此我们需要在测试/评估之前，将self._quantized_cdf更新到最新的正确值。
+    
+    
     #! 理解:
     # 由于我们用数组self._quantized_cdf来作为量化隐变量hat_y的累计分布函数CDF，数组是只能存有限个取值，因此我们就找到量化隐变量hat_y的概率密度函数pmf的非零区间，只维护这个非零区间。
     # self.quantiles 是用来维护 “量化隐变量hat_y”的概率密度函数的上下界以及中位数
@@ -821,7 +827,7 @@ class EntropyBottleneck(EntropyModel):
         返回值
         返回值：一个包含两个张量的元组 (outputs, likelihood)：
         outputs：量化后的输出张量，维度与输入张量相同。
-        likelihood：输入值的似然张量，维度与输入张量相同。
+        likelihood：输入值x被量化后: x_hat的似然张量(概率)，维度与输入张量相同。
         
         实现逻辑：
         
@@ -861,7 +867,7 @@ class EntropyBottleneck(EntropyModel):
         #* 量化后的值为 outputs
 
         if not torch.jit.is_scripting():
-            likelihood, _, _ = self._likelihood(outputs)    #* 计算量化后的输出张量的似然
+            likelihood, _, _ = self._likelihood(outputs)    #* 计算量化后的输出张量 x_hat 的似然
             if self.use_likelihood_bound:
                 likelihood = self.likelihood_lower_bound(likelihood)
         else:
